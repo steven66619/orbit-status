@@ -9,7 +9,13 @@ Homepage: https://github.com/steven66619/wlstatus
 
 Package: wlstatus
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Maintainer: steven66619 <ste@example.com>
+Section: x11
+Priority: optional
+Homepage: https://github.com/steven66619/wlstatus
+Depends: libcairo2, libpango-1.0-0, libpangocairo-1.0-0,
+ libwayland-client0, libglib2.0-0, libharfbuzz0b,
+ libpixman-1-0, libpng16-16, libsystemd0
 Description: Lightweight Wayland status bar for wlr-layer-shell compositors
  A lightweight status bar for Hyprland, Sway, and other wlr-layer-shell
  compositors. Features workspace switching, system info (CPU, memory, disk,
