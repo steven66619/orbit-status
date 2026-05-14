@@ -31,34 +31,77 @@ Or use the install script (handles dependencies, build, install, and initial con
 ./install.sh
 ```
 
-### Packaging
+### Package Repositories
 
-**Debian/Ubuntu** — build a .deb:
+Packages are available via GitHub Pages at `https://steven66619.github.io/wlstatus/`.
+
+**Debian/Ubuntu** — add the APT repo:
+
+```sh
+curl -fsSL https://steven66619.github.io/wlstatus/GPG-KEY | sudo gpg --dearmor -o /usr/share/keyrings/wlstatus.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/wlstatus.gpg] https://steven66619.github.io/wlstatus/apt stable main" | sudo tee /etc/apt/sources.list.d/wlstatus.list
+sudo apt update && sudo apt install wlstatus
+```
+
+**Fedora/RHEL** — add the YUM repo:
+
+```sh
+sudo dnf config-manager --add-repo https://steven66619.github.io/wlstatus/yum/wlstatus.repo
+sudo dnf install wlstatus
+```
+
+**Arch Linux** — add to `/etc/pacman.conf`:
+
+```ini
+[wlstatus]
+SigLevel = Optional TrustAll
+Server = https://steven66619.github.io/wlstatus/arch/x86_64
+```
+
+```sh
+sudo pacman -Sy wlstatus
+```
+
+### Build from Source
+
+```sh
+make
+sudo make install
+```
+
+Or use the install script (handles dependencies, build, install, and initial config):
+
+```sh
+./install.sh
+```
+
+### Build Packages Locally
+
+**Arch Linux**:
+
+```sh
+makepkg -si
+```
+
+**Debian/Ubuntu**:
 
 ```sh
 sudo apt build-dep .
 dpkg-buildpackage -us -uc -b
 ```
 
-**Fedora/RHEL** — build an RPM:
+**Fedora/RHEL**:
 
 ```sh
-sudo dnf install rpm-build
-make PREFIX=/usr DESTDIR=/tmp/wlstatus install
-# or use the spec file:
 rpmbuild -ba wlstatus.spec
 ```
 
-**Arch Linux** — build from source or use the PKGBUILD:
+**All distros** (uses `mkpkg` helper):
 
 ```sh
-# from source:
-sudo pacman -S wayland wayland-protocols cairo pango
-make
-sudo make install
-
-# or with makepkg:
-makepkg -si
+./mkpkg deb-native   # .deb on Arch
+./mkpkg rpm-native   # .rpm on Arch
+./mkpkg arch         # .pkg.tar.zst on Arch
 ```
 
 ## Configuration
