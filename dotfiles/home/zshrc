@@ -1,0 +1,5 @@
+source /usr/share/cachyos-zsh-config/cachyos-config.zsh
+
+. "$HOME/.atuin/bin/env"
+
+eval "$(atuin init zsh)"
