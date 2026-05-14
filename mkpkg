@@ -59,7 +59,7 @@ case "$TARGET" in
     deb-native)
         echo "==> Building .deb on Arch with dpkg"
         sudo pacman -S --needed dpkg
-        dpkg-buildpackage -us -uc -b
+        dpkg-buildpackage -d -us -uc -b
         echo "==> .deb written to ../wlstatus_*.deb"
         ;;
     rpm-native)
