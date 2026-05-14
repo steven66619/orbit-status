@@ -1,0 +1,21 @@
+Package: wlstatus
+Version: 1.0-1
+Architecture: any
+Maintainer: steven66619 <ste@example.com>
+Depends: libcairo2, libpango-1.0-0, libpangocairo-1.0-0,
+ libwayland-client0, libglib2.0-0, libharfbuzz0b,
+ libpixman-1-0, libpng16-16, libsystemd0
+Filename: repo/apt/pool/main/wlstatus_1.0-1_any.deb
+Size: 18616
+MD5sum: 23fef6806916fb1870aaf77a813904b1
+SHA1: ff39618c592f79a862988786f0da8b0d7499d4e0
+SHA256: d53c794780be795b7b1ccf65fa47d815444922c61d8a49ff0c43851120358364
+Section: x11
+Priority: optional
+Homepage: https://github.com/steven66619/wlstatus
+Description: Lightweight Wayland status bar for wlr-layer-shell compositors
+ A lightweight status bar for Hyprland, Sway, and other wlr-layer-shell
+ compositors. Features workspace switching, system info (CPU, memory, disk,
+ updates), power options with confirmation popup, and date/time display.
+
+dpkg-scanpackages: info: Wrote 1 entries to output Packages file.
