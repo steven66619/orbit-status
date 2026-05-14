@@ -6,3 +6,4 @@ xdg-shell-client.c
 xdg-shell-client.h
 debian/files
 debian/substvars
+debian-build
