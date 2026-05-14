@@ -1,0 +1,16 @@
+Source: wlstatus
+Section: x11
+Priority: optional
+Maintainer: steven66619 <ste@example.com>
+Build-Depends: debhelper-compat (= 13), pkg-config, libwayland-dev,
+ libcairo2-dev, libpango1.0-dev, wayland-protocols
+Standards-Version: 4.6.2
+Homepage: https://github.com/steven66619/wlstatus
+
+Package: wlstatus
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Lightweight Wayland status bar for wlr-layer-shell compositors
+ A lightweight status bar for Hyprland, Sway, and other wlr-layer-shell
+ compositors. Features workspace switching, system info (CPU, memory, disk,
+ updates), power options with confirmation popup, and date/time display.

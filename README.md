@@ -31,6 +31,24 @@ Or use the install script (handles dependencies, build, install, and initial con
 ./install.sh
 ```
 
+### Packaging
+
+**Debian/Ubuntu** — build a .deb:
+
+```sh
+sudo apt build-dep .
+dpkg-buildpackage -us -uc -b
+```
+
+**Fedora/RHEL** — build an RPM:
+
+```sh
+sudo dnf install rpm-build
+make PREFIX=/usr DESTDIR=/tmp/wlstatus install
+# or use the spec file:
+rpmbuild -ba wlstatus.spec
+```
+
 ## Configuration
 
 Create `~/.config/wlstatus/config`. Example:
