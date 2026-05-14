@@ -14,17 +14,19 @@ install: build
 	mkdir -p $(CURDIR)/debian/wlstatus-personal/usr/share/wlstatus-personal/home
 	mkdir -p $(CURDIR)/debian/wlstatus-personal/usr/share/wlstatus-personal/config
 	for f in dotfiles/home/*; do \
-	  install -Dm644 "$$f" $(CURDIR)/debian/wlstatus-personal/usr/share/wlstatus-personal/home/; \
+	  [ -f "$$f" ] && install -Dm644 "$$f" $(CURDIR)/debian/wlstatus-personal/usr/share/wlstatus-personal/home/ || true; \
 	done
 	for dir in dotfiles/config/*/; do \
+	  [ -d "$$dir" ] || continue; \
 	  name=$$(basename "$$dir"); \
 	  mkdir -p $(CURDIR)/debian/wlstatus-personal/usr/share/wlstatus-personal/config/"$$name"; \
-	  cp -r "$$dir"/* $(CURDIR)/debian/wlstatus-personal/usr/share/wlstatus-personal/config/"$$name"/; \
+	  cp -r "$$dir". $(CURDIR)/debian/wlstatus-personal/usr/share/wlstatus-personal/config/"$$name"/; \
 	done
 
 binary-arch: install
 	mkdir -p $(CURDIR)/debian/wlstatus-personal/DEBIAN
 	awk '/^Package:/ {p=1} p' debian-personal/control > $(CURDIR)/debian/wlstatus-personal/DEBIAN/control
+	echo "Maintainer: steven66619 <ste@example.com>" >> $(CURDIR)/debian/wlstatus-personal/DEBIAN/control
 	echo "Version: 1.0-1" >> $(CURDIR)/debian/wlstatus-personal/DEBIAN/control
 	dpkg-deb --root-owner-group --build $(CURDIR)/debian/wlstatus-personal $(CURDIR)/..
 
