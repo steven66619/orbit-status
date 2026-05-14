@@ -49,6 +49,18 @@ make PREFIX=/usr DESTDIR=/tmp/wlstatus install
 rpmbuild -ba wlstatus.spec
 ```
 
+**Arch Linux** — build from source or use the PKGBUILD:
+
+```sh
+# from source:
+sudo pacman -S wayland wayland-protocols cairo pango
+make
+sudo make install
+
+# or with makepkg:
+makepkg -si
+```
+
 ## Configuration
 
 Create `~/.config/wlstatus/config`. Example:
