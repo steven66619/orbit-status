@@ -37,6 +37,24 @@ sudo curl -L -o /etc/yum.repos.d/wlstatus.repo \
 sudo dnf install wlstatus
 ```
 
+## Arch Linux
+
+Add to `/etc/pacman.conf`:
+
+```ini
+[wlstatus]
+SigLevel = Optional TrustAll
+Server = https://steven66619.github.io/wlstatus/arch/x86_64
+```
+
+Then install:
+
+```bash
+sudo pacman -Sy wlstatus
+```
+
+Or download the `.pkg.tar.zst` directly from the [Releases page](https://github.com/steven66619/wlstatus/releases).
+
 ## Manual download
 
-Grab the latest `.deb` or `.rpm` from the [Releases page](https://github.com/steven66619/wlstatus/releases).
+Grab the latest `.deb`, `.rpm`, or `.pkg.tar.zst` from the [Releases page](https://github.com/steven66619/wlstatus/releases).

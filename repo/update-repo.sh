@@ -36,14 +36,30 @@ if gpg --list-keys ste@example.com &>/dev/null; then
 fi
 
 echo "==> Updating YUM repo ($ARCH)..."
-# copy .rpm from rpmbuild
 RPM_SRC=$(ls /home/ste/rpmbuild/RPMS/$ARCH/wlstatus-*.rpm 2>/dev/null | head -1)
 if [ -n "$RPM_SRC" ]; then
     cp "$RPM_SRC" "$YUM_DIR/"
 fi
-
 createrepo_c --update "$YUM_DIR"
+
+echo "==> Updating Arch repo..."
+ARCH_DIR="$REPO_DIR/arch/x86_64"
+mkdir -p "$ARCH_DIR"
+# build from PKGBUILD if needed
+if ! ls "$ARCH_DIR"/wlstatus-*.pkg.tar.zst &>/dev/null; then
+    echo "    No package found, building with makepkg..."
+    BUILD_DIR=$(mktemp -d)
+    cp "$PROJECT_DIR/PKGBUILD" "$PROJECT_DIR/"*.c "$PROJECT_DIR/"*.h "$PROJECT_DIR/Makefile" "$PROJECT_DIR/"*.xml "$BUILD_DIR/"
+    (cd "$BUILD_DIR" && makepkg -f --noconfirm)
+    cp "$BUILD_DIR"/*.pkg.tar.zst "$ARCH_DIR/"
+    rm -rf "$BUILD_DIR"
+else
+    echo "    Package exists, using existing build"
+fi
+cd "$ARCH_DIR"
+repo-add wlstatus.db.tar.zst wlstatus-*.pkg.tar.zst
 
 echo "==> Done. Repo updated at $REPO_DIR"
 echo "    APT:  file://$REPO_DIR/apt"
 echo "    YUM:  file://$REPO_DIR/yum"
+echo "    Arch: file://$REPO_DIR/arch"
