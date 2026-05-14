@@ -15,7 +15,7 @@ BuildRequires: pkgconfig(wayland-client)
 BuildRequires: pkgconfig(cairo)
 BuildRequires: pkgconfig(pangocairo)
 BuildRequires: wayland-protocols-devel
-Requires: hyprland, waybar, kitty, fish, thunar, kate, libfm, bash, zsh, git
+Requires: hyprland, waybar, kitty, fish, thunar, pcmanfm, kate, libfm, bash, zsh, git
 
 %description
 A lightweight status bar for Hyprland, Sway, and other wlr-layer-shell
