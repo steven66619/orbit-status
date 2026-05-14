@@ -6,7 +6,8 @@ pkgdesc="wlstatus + personal dotfiles (shell, hyprland, waybar, kitty, fish)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/steven66619/wlstatus-personal"
 license=('MIT')
-depends=('wayland' 'cairo' 'pango' 'glib2')
+depends=('wayland' 'cairo' 'pango' 'glib2' 'hyprland' 'waybar' 'kitty' 'fish' 'thunar' 'kate' 'libfm' 'bash' 'zsh' 'git')
+optdepends=('matugen-bin: Material color generation for theme colors')
 makedepends=('wayland-protocols')
 source=("$pkgname::git+ssh://git@github.com/steven66619/wlstatus-personal.git#branch=personal")
 sha256sums=('SKIP')

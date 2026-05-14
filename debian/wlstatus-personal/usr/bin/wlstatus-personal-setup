@@ -1,0 +1,79 @@
+#!/bin/sh
+set -e
+
+SHARE_DIR="${SHARE_DIR:-/usr/share/wlstatus-personal}"
+
+usage() {
+    cat <<'EOF'
+Usage: wlstatus-personal-setup [OPTIONS]
+
+Deploy personal dotfiles to your home directory.
+Run this after installing the wlstatus-personal package.
+
+Options:
+  -u, --uninstall    Remove deployed dotfiles
+  -h, --help         Show this help
+EOF
+    exit 0
+}
+
+uninstall() {
+    echo "==> Removing dotfiles"
+    for f in "$SHARE_DIR/home/"*; do
+        [ -f "$f" ] || continue
+        name="$(basename "$f")"
+        rm -f "$HOME/.$name"
+    done
+
+    for dir in "$SHARE_DIR/config/"*/; do
+        [ -d "$dir" ] || continue
+        name="$(basename "$dir")"
+        rm -rf "$HOME/.config/$name"
+    done
+
+    echo "==> Done"
+    exit 0
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) usage ;;
+        -u|--uninstall) uninstall ;;
+    esac
+done
+
+if [ ! -d "$SHARE_DIR/home" ] && [ ! -d "$SHARE_DIR/config" ]; then
+    echo "ERROR: dotfiles not found at $SHARE_DIR"
+    echo "Make sure the wlstatus-personal package is installed."
+    exit 1
+fi
+
+echo "==> Deploying personal dotfiles to $HOME"
+
+for f in "$SHARE_DIR/home/"*; do
+    [ -f "$f" ] || continue
+    name="$(basename "$f")"
+    target="$HOME/.$name"
+    if [ -f "$target" ] && [ ! -L "$target" ]; then
+        cp "$target" "$target.bak.$(date +%s)"
+        echo "    backed up $target"
+    fi
+    cp "$f" "$target"
+    echo "    .$name"
+done
+
+for dir in "$SHARE_DIR/config/"*/; do
+    [ -d "$dir" ] || continue
+    name="$(basename "$dir")"
+    target="$HOME/.config/$name"
+    if [ -d "$target" ] && [ ! -L "$target" ]; then
+        cp -r "$target" "$target.bak.$(date +%s)"
+        echo "    backed up $target"
+    fi
+    mkdir -p "$HOME/.config"
+    cp -r "$dir" "$target"
+    echo "    .config/$name"
+done
+
+echo ""
+echo "==> Dotfiles deployed. Log out and back in or source your shell rc."
