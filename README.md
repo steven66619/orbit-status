@@ -25,6 +25,12 @@ make
 sudo make install
 ```
 
+Or use the install script (handles dependencies, build, install, and initial config):
+
+```sh
+./install.sh
+```
+
 ## Configuration
 
 Create `~/.config/wlstatus/config`. Example:
@@ -38,9 +44,14 @@ glow_alpha_percent = 25
 icon_alpha_percent = 90
 icon_hover_alpha_percent = 100
 
-poweroff_color = 1.0 0.2 0.3 1.0
-reboot_color = 1.0 0.6 0.0 1.0
-suspend_color = 0.6 0.2 1.0 1.0
+poweroff_color = 1.0 0.2 0.3
+reboot_color = 1.0 0.6 0.0
+suspend_color = 0.6 0.2 1.0
+
+show_hyperion = 1
+show_hyperion_logo = 1
+hyperion_color = 0.92 0.72 0.0
+accent_color = 0.0 0.90 1.0
 ```
 
 ### Config options
@@ -49,14 +60,19 @@ suspend_color = 0.6 0.2 1.0 1.0
 |---|---|---|
 | `bar_height` | 38 | Bar height in pixels |
 | `bar_padding` | 8 | Horizontal padding |
+| `bar_bg_color` | *gradient* | Solid bar background color (r g b [a]), set `0 0 0 0` to remove |
 | `icon_size` | 24 | Power icon size |
 | `glow_width` | 8 | Hover glow width |
 | `glow_alpha_percent` | 25 | Glow opacity |
 | `icon_alpha_percent` | 90 | Default icon opacity |
 | `icon_hover_alpha_percent` | 100 | Hovered icon opacity |
-| `poweroff_color` | `1.0 0.2 0.3 1.0` | Poweroff icon color (RGBA) |
-| `reboot_color` | `1.0 0.6 0.0 1.0` | Reboot icon color (RGBA) |
-| `suspend_color` | `0.6 0.2 1.0 1.0` | Suspend icon color (RGBA) |
+| `poweroff_color` | `1.0 0.2 0.3` | Poweroff icon color (RGB) |
+| `reboot_color` | `1.0 0.6 0.0` | Reboot icon color (RGB) |
+| `suspend_color` | `0.6 0.2 1.0` | Suspend icon color (RGB) |
+| `show_hyperion` | `1` | Show/hide Hyprland workspace section |
+| `show_hyperion_logo` | `1` | Show/hide Hyperion logo next to workspaces |
+| `hyperion_color` | `0.92 0.72 0.0` | Workspace pill and logo color (RGB) |
+| `accent_color` | `0.0 0.90 1.0` | Date/time, info pills, and bottom line accent (RGB) |
 
 ## Usage
 

@@ -170,35 +170,96 @@ static void draw_power_buttons(struct bar *bar, cairo_t *cr, int h)
     }
 }
 
-static void draw_background(cairo_t *cr, int w, int h)
+static void draw_background(cairo_t *cr, int w, int h, struct config *cfg)
 {
-    cairo_pattern_t *pat = cairo_pattern_create_linear(0, 0, 0, h);
-    cairo_pattern_add_color_stop_rgba(pat, 0,   0.02, 0.02, 0.06, 0.99);
-    cairo_pattern_add_color_stop_rgba(pat, 0.5, 0.04, 0.04, 0.10, 0.99);
-    cairo_pattern_add_color_stop_rgba(pat, 1,   0.03, 0.03, 0.08, 0.99);
-    cairo_rectangle(cr, 0, 0, w, h);
-    cairo_set_source(cr, pat);
-    cairo_fill(cr);
-    cairo_pattern_destroy(pat);
+    float bg_col[4];
+    if (config_get_color(cfg, "bar_bg_color", bg_col, NULL) && bg_col[3] > 0.0f) {
+        cairo_set_source_rgba(cr, bg_col[0], bg_col[1], bg_col[2], bg_col[3]);
+        cairo_rectangle(cr, 0, 0, w, h);
+        cairo_fill(cr);
+    } else {
+        cairo_pattern_t *pat = cairo_pattern_create_linear(0, 0, 0, h);
+        cairo_pattern_add_color_stop_rgba(pat, 0,   0.02, 0.02, 0.06, 0.99);
+        cairo_pattern_add_color_stop_rgba(pat, 0.5, 0.04, 0.04, 0.10, 0.99);
+        cairo_pattern_add_color_stop_rgba(pat, 1,   0.03, 0.03, 0.08, 0.99);
+        cairo_rectangle(cr, 0, 0, w, h);
+        cairo_set_source(cr, pat);
+        cairo_fill(cr);
+        cairo_pattern_destroy(pat);
+    }
 
-    cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.15);
+    float acc[4];
+    float def_acc[] = {0.0f, 0.90f, 1.0f, 1.0f};
+    config_get_color(cfg, "accent_color", acc, def_acc);
+
+    cairo_set_source_rgba(cr, acc[0], acc[1], acc[2], 0.15);
     cairo_set_line_width(cr, 6);
     cairo_move_to(cr, 0, h - 0.5);
     cairo_line_to(cr, w, h - 0.5);
     cairo_stroke(cr);
 
-    cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.5);
+    cairo_set_source_rgba(cr, acc[0], acc[1], acc[2], 0.5);
     cairo_set_line_width(cr, 2);
     cairo_move_to(cr, 0, h - 0.5);
     cairo_line_to(cr, w, h - 0.5);
     cairo_stroke(cr);
 }
 
+static void draw_hyperion_logo(cairo_t *cr, int x, int y, int size, float *color)
+{
+    double cx = x + size / 2.0;
+    double cy = y + size / 2.0;
+    double outer_r = size / 2.0 - 1;
+    double tip_r = outer_r * 0.35;
+    double center_r = outer_r * 0.12;
+
+    cairo_set_source_rgba(cr, color[0], color[1], color[2], 0.9);
+    cairo_set_line_width(cr, 2.0);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+
+    cairo_arc(cr, cx, cy, outer_r, 0, 2 * M_PI);
+    cairo_stroke(cr);
+
+    for (int i = 0; i < 3; i++) {
+        double a = i * 2 * M_PI / 3 - M_PI / 2;
+        double half_w = 0.5;
+        double tx = cx + cos(a) * tip_r;
+        double ty = cy + sin(a) * tip_r;
+        double b1x = cx + cos(a + half_w) * outer_r;
+        double b1y = cy + sin(a + half_w) * outer_r;
+        double b2x = cx + cos(a - half_w) * outer_r;
+        double b2y = cy + sin(a - half_w) * outer_r;
+        cairo_move_to(cr, tx, ty);
+        cairo_line_to(cr, b1x, b1y);
+        cairo_line_to(cr, b2x, b2y);
+        cairo_close_path(cr);
+        cairo_fill(cr);
+    }
+
+    cairo_arc(cr, cx, cy, center_r, 0, 2 * M_PI);
+    cairo_fill(cr);
+}
+
 static void draw_workspaces(struct bar *bar, cairo_t *cr, int h, int x)
 {
+    if (!config_get_int(bar->cfg, "show_hyperion", 1))
+        return;
+
+    if (bar->n_workspaces == 0) return;
+
+    float hcol[4];
+    float def_hcol[] = {0.92f, 0.72f, 0.0f, 1.0f};
+    config_get_color(bar->cfg, "hyperion_color", hcol, def_hcol);
+
     int y = BAR_PADDING;
     int btn_h = h - BAR_PADDING * 2;
     double btn_r = btn_h / 2.0;
+
+    if (config_get_int(bar->cfg, "show_hyperion_logo", 1)) {
+        draw_hyperion_logo(cr, x, y, btn_h, hcol);
+        x += btn_h + 8;
+    }
 
     PangoLayout *layout = pango_cairo_create_layout(cr);
     PangoFontDescription *font = pango_font_description_from_string(
@@ -225,30 +286,30 @@ static void draw_workspaces(struct bar *bar, cairo_t *cr, int h, int x)
 
         if (active) {
             if (hovered) {
-                cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.10);
+                cairo_set_source_rgba(cr, hcol[0], hcol[1], hcol[2], 0.10);
                 cairo_set_line_width(cr, 6);
                 draw_rounded_rect(cr, x, y, btn_w, btn_h, btn_r);
                 cairo_stroke(cr);
             }
-            cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, hovered ? 0.95 : 0.80);
+            cairo_set_source_rgba(cr, hcol[0], hcol[1], hcol[2], hovered ? 0.95 : 0.80);
             draw_rounded_rect(cr, x, y, btn_w, btn_h, btn_r);
             cairo_fill(cr);
             cairo_set_source_rgb(cr, 0.02, 0.02, 0.06);
         } else {
             if (hovered) {
-                cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.10);
+                cairo_set_source_rgba(cr, hcol[0], hcol[1], hcol[2], 0.10);
                 cairo_set_line_width(cr, 6);
                 draw_rounded_rect(cr, x, y, btn_w, btn_h, btn_r);
                 cairo_stroke(cr);
             }
-            cairo_set_source_rgba(cr, 0.0, 0.55, 0.80, hovered ? 0.7 : 0.35);
+            cairo_set_source_rgba(cr, hcol[0] * 0.6f, hcol[1] * 0.6f, hcol[2] * 0.6f, hovered ? 0.7 : 0.35);
             cairo_set_line_width(cr, 1.2);
             draw_rounded_rect(cr, x, y, btn_w, btn_h, btn_r);
             cairo_stroke(cr);
         }
 
         if (!active)
-            cairo_set_source_rgba(cr, 0.0, 0.55, 0.80, hovered ? 0.9 : 0.5);
+            cairo_set_source_rgba(cr, hcol[0] * 0.6f, hcol[1] * 0.6f, hcol[2] * 0.6f, hovered ? 0.9 : 0.5);
         cairo_move_to(cr, text_x, text_y + 1);
         pango_cairo_show_layout(cr, layout);
 
@@ -273,7 +334,7 @@ void bar_render(struct bar *bar, cairo_t *cr)
 {
     bar->n_clickables = 0;
 
-    draw_background(cr, bar->width, bar->height);
+    draw_background(cr, bar->width, bar->height, bar->cfg);
 
     int ws_start = 48;
     draw_workspaces(bar, cr, bar->height, ws_start);
@@ -287,6 +348,10 @@ void bar_render(struct bar *bar, cairo_t *cr)
     int cx = ws_start + 10;
     int cx_end = pw_start - 10;
     int cw = 0;
+
+    float acc[4];
+    float def_acc[] = {0.0f, 0.90f, 1.0f, 1.0f};
+    config_get_color(bar->cfg, "accent_color", acc, def_acc);
 
     {
         time_t t = time(NULL);
@@ -347,7 +412,7 @@ void bar_render(struct bar *bar, cairo_t *cr)
         int center = cx + (cx_end - cx - cw) / 2;
         if (center < cx) center = cx;
 
-        cairo_set_source_rgb(cr, 0.0, 0.90, 1.0);
+        cairo_set_source_rgb(cr, acc[0], acc[1], acc[2]);
         cairo_move_to(cr, center, (bar->height - th) / 2.0 + 1);
         pango_cairo_show_layout(cr, lay);
 
@@ -360,14 +425,14 @@ void bar_render(struct bar *bar, cairo_t *cr)
         int p_heights[] = {cpu_h, mem_h, upd_h, dsk_h};
         PangoLayout *p_layouts[] = {lay_cpu, lay_mem, lay_upd, lay_dsk};
         float p_border_r[][3] = {
-            {0.0, 0.90, 1.0},
-            {0.0, 0.90, 1.0},
+            {acc[0], acc[1], acc[2]},
+            {acc[0], acc[1], acc[2]},
             {0.80, 0.20, 1.0},
             {0.20, 0.85, 0.40},
         };
         float p_fill_r[][4] = {
-            {0.0, 0.25, 0.40, 0.35},
-            {0.0, 0.25, 0.40, 0.35},
+            {acc[0] * 0.28f, acc[1] * 0.28f, acc[2] * 0.28f, 0.35f},
+            {acc[0] * 0.28f, acc[1] * 0.28f, acc[2] * 0.28f, 0.35f},
             {0.30, 0.05, 0.40, 0.30},
             {0.05, 0.30, 0.10, 0.30},
         };
