@@ -1,0 +1,6 @@
+[wlstatus-personal]
+name=wlstatus-personal
+baseurl=https://steven66619.github.io/wlstatus/yum/$basearch
+enabled=1
+gpgcheck=0
+repo_gpgcheck=0

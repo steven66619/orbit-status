@@ -2,7 +2,7 @@ name: Deploy package repo to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, personal]
     paths: ['repo/**']
   workflow_dispatch:
 
@@ -18,3 +18,4 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./repo
           destination_dir: ./
+          keep_files: true
