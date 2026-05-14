@@ -1,0 +1,8 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: wlstatus-personal
+Upstream-Contact: steven66619 <ste@example.com>
+Source: https://github.com/steven66619/wlstatus
+
+Files: *
+Copyright: 2026 steven66619
+License: MIT
