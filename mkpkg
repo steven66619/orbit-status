@@ -59,9 +59,8 @@ case "$TARGET" in
     deb-native)
         echo "==> Building .deb on Arch with dpkg"
         sudo pacman -S --needed dpkg
-        tar czf "../wlstatus_1.0.tar.gz" --transform 's/^wlstatus/wlstatus-1.0/' *
-        dpkg-source -b .
         dpkg-buildpackage -us -uc -b
+        echo "==> .deb written to ../wlstatus_*.deb"
         ;;
     rpm-native)
         echo "==> Building .rpm on Arch with rpmbuild"
