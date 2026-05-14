@@ -1,0 +1,667 @@
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <wayland-client.h>
+#include <poll.h>
+#include <sys/timerfd.h>
+#include "wlr-layer-shell-unstable-v1-client.h"
+#include <cairo.h>
+#include <pango/pangocairo.h>
+#include "bar.h"
+#include "config.h"
+
+struct wl_status {
+    struct wl_display *display;
+    struct wl_compositor *compositor;
+    struct wl_shm *shm;
+    struct zwlr_layer_shell_v1 *layer_shell;
+    struct zwlr_layer_surface_v1 *layer_surface;
+    struct wl_surface *surface;
+    struct wl_seat *seat;
+    struct wl_pointer *pointer;
+
+    struct wl_buffer *buffer;
+    cairo_surface_t *cairo_surface;
+    cairo_t *cr;
+    void *shm_data;
+    int width, height;
+
+    struct bar *bar;
+    struct config *cfg;
+    bool configured;
+    bool running;
+    uint32_t configure_serial;
+    int pointer_x, pointer_y;
+    struct wl_surface *current_pointer_surface;
+
+    int timer_fd;
+
+    struct {
+        struct wl_surface *surface;
+        struct zwlr_layer_surface_v1 *layer_surface;
+        struct wl_buffer *buffer;
+        cairo_surface_t *cairo_surface;
+        cairo_t *cr;
+        void *shm_data;
+        int width, height;
+        bool visible, configured;
+        int action;
+        int hovered_btn;
+        int confirm_btn_x, confirm_btn_y, confirm_btn_w, confirm_btn_h;
+        int cancel_btn_x, cancel_btn_y, cancel_btn_w, cancel_btn_h;
+    } popup;
+};
+
+static int create_shm_fd(size_t size)
+{
+    int fd = memfd_create("wlstatus", MFD_CLOEXEC);
+    if (fd < 0) return -1;
+    if (ftruncate(fd, (off_t)size) < 0) { close(fd); return -1; }
+    return fd;
+}
+
+static int create_buffer(struct wl_status *ws)
+{
+    if (ws->buffer) return 0;
+    int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->width);
+    int size = stride * ws->height;
+    int fd = create_shm_fd(size);
+    if (fd < 0) return -1;
+
+    struct wl_shm_pool *pool = wl_shm_create_pool(ws->shm, fd, size);
+    ws->buffer = wl_shm_pool_create_buffer(pool, 0, ws->width, ws->height,
+        stride, WL_SHM_FORMAT_ARGB8888);
+    wl_shm_pool_destroy(pool);
+
+    ws->shm_data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (ws->shm_data == MAP_FAILED) return -1;
+
+    ws->cairo_surface = cairo_image_surface_create_for_data(
+        ws->shm_data, CAIRO_FORMAT_ARGB32, ws->width, ws->height, stride);
+    ws->cr = cairo_create(ws->cairo_surface);
+    return 0;
+}
+
+static void destroy_buffer(struct wl_status *ws)
+{
+    if (ws->cr) cairo_destroy(ws->cr);
+    ws->cr = NULL;
+    if (ws->cairo_surface) cairo_surface_destroy(ws->cairo_surface);
+    ws->cairo_surface = NULL;
+    if (ws->shm_data) {
+        int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->width);
+        munmap(ws->shm_data, stride * ws->height);
+    }
+    ws->shm_data = NULL;
+    if (ws->buffer) wl_buffer_destroy(ws->buffer);
+    ws->buffer = NULL;
+}
+
+static void render(struct wl_status *ws)
+{
+    bar_render(ws->bar, ws->cr);
+    cairo_surface_flush(ws->cairo_surface);
+    wl_surface_attach(ws->surface, ws->buffer, 0, 0);
+    wl_surface_damage_buffer(ws->surface, 0, 0, ws->width, ws->height);
+    wl_surface_commit(ws->surface);
+}
+
+static int popup_create_buffer(struct wl_status *ws)
+{
+    if (ws->popup.buffer) return 0;
+    int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->popup.width);
+    int size = stride * ws->popup.height;
+    int fd = create_shm_fd(size);
+    if (fd < 0) return -1;
+
+    struct wl_shm_pool *pool = wl_shm_create_pool(ws->shm, fd, size);
+    ws->popup.buffer = wl_shm_pool_create_buffer(pool, 0,
+        ws->popup.width, ws->popup.height, stride, WL_SHM_FORMAT_ARGB8888);
+    wl_shm_pool_destroy(pool);
+
+    ws->popup.shm_data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (ws->popup.shm_data == MAP_FAILED) return -1;
+
+    ws->popup.cairo_surface = cairo_image_surface_create_for_data(
+        ws->popup.shm_data, CAIRO_FORMAT_ARGB32, ws->popup.width, ws->popup.height, stride);
+    ws->popup.cr = cairo_create(ws->popup.cairo_surface);
+    return 0;
+}
+
+static void popup_destroy_buffer(struct wl_status *ws)
+{
+    if (ws->popup.cr) cairo_destroy(ws->popup.cr);
+    ws->popup.cr = NULL;
+    if (ws->popup.cairo_surface) cairo_surface_destroy(ws->popup.cairo_surface);
+    ws->popup.cairo_surface = NULL;
+    if (ws->popup.shm_data) {
+        int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->popup.width);
+        munmap(ws->popup.shm_data, stride * ws->popup.height);
+    }
+    ws->popup.shm_data = NULL;
+    if (ws->popup.buffer) wl_buffer_destroy(ws->popup.buffer);
+    ws->popup.buffer = NULL;
+}
+
+static void popup_render(struct wl_status *ws)
+{
+    cairo_t *cr = ws->popup.cr;
+    int w = ws->popup.width, h = ws->popup.height;
+
+    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
+    draw_rounded_rect(cr, 0, 0, w, h, 8);
+    cairo_set_source_rgba(cr, 0.12, 0.12, 0.22, 0.96);
+    cairo_fill(cr);
+
+    cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.3);
+    cairo_set_line_width(cr, 1);
+    draw_rounded_rect(cr, 0, 0, w, h, 8);
+    cairo_stroke(cr);
+
+    const char *labels[] = {"Power Off", "Reboot", "Suspend"};
+    PangoLayout *lay = pango_cairo_create_layout(cr);
+    PangoFontDescription *fd = pango_font_description_from_string("Sans Bold 13");
+    pango_layout_set_font_description(lay, fd);
+    pango_font_description_free(fd);
+    pango_layout_set_text(lay, labels[ws->popup.action], -1);
+    int tw, th;
+    pango_layout_get_pixel_size(lay, &tw, &th);
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    cairo_move_to(cr, (w - tw) / 2, 24);
+    pango_cairo_show_layout(cr, lay);
+
+    int btn_w = 65, btn_h = 28, btn_gap = 12;
+    int btn_y = h - btn_h - 14;
+    int confirm_x = (w - btn_w * 2 - btn_gap) / 2;
+    int cancel_x = confirm_x + btn_w + btn_gap;
+
+    bool con_hover = (ws->popup.hovered_btn == 0);
+    bool can_hover = (ws->popup.hovered_btn == 1);
+
+    cairo_set_source_rgba(cr, 0.2, 0.8, 0.3, con_hover ? 0.9 : 0.6);
+    draw_rounded_rect(cr, confirm_x, btn_y, btn_w, btn_h, 5);
+    cairo_fill(cr);
+
+    cairo_set_source_rgba(cr, 0.9, 0.2, 0.2, can_hover ? 0.9 : 0.6);
+    draw_rounded_rect(cr, cancel_x, btn_y, btn_w, btn_h, 5);
+    cairo_fill(cr);
+
+    PangoFontDescription *fb = pango_font_description_from_string("Sans Bold 11");
+    PangoLayout *lc = pango_cairo_create_layout(cr);
+    pango_layout_set_font_description(lc, fb);
+    pango_layout_set_text(lc, "Confirm", -1);
+    int cw, ch;
+    pango_layout_get_pixel_size(lc, &cw, &ch);
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    cairo_move_to(cr, confirm_x + (btn_w - cw) / 2, btn_y + (btn_h - ch) / 2 + 1);
+    pango_cairo_show_layout(cr, lc);
+
+    PangoLayout *lx = pango_cairo_create_layout(cr);
+    pango_layout_set_font_description(lx, fb);
+    pango_layout_set_text(lx, "Cancel", -1);
+    pango_layout_get_pixel_size(lx, &cw, &ch);
+    cairo_move_to(cr, cancel_x + (btn_w - cw) / 2, btn_y + (btn_h - ch) / 2 + 1);
+    pango_cairo_show_layout(cr, lx);
+    pango_font_description_free(fb);
+    g_object_unref(lc);
+    g_object_unref(lx);
+    g_object_unref(lay);
+
+    ws->popup.confirm_btn_x = confirm_x;
+    ws->popup.confirm_btn_y = btn_y;
+    ws->popup.confirm_btn_w = btn_w;
+    ws->popup.confirm_btn_h = btn_h;
+    ws->popup.cancel_btn_x = cancel_x;
+    ws->popup.cancel_btn_y = btn_y;
+    ws->popup.cancel_btn_w = btn_w;
+    ws->popup.cancel_btn_h = btn_h;
+
+    cairo_surface_flush(ws->popup.cairo_surface);
+    wl_surface_attach(ws->popup.surface, ws->popup.buffer, 0, 0);
+    wl_surface_damage_buffer(ws->popup.surface, 0, 0, w, h);
+    wl_surface_commit(ws->popup.surface);
+}
+
+static void popup_destroy(struct wl_status *ws)
+{
+    if (!ws->popup.visible) return;
+    ws->popup.visible = false;
+    popup_destroy_buffer(ws);
+    if (ws->popup.layer_surface) {
+        zwlr_layer_surface_v1_destroy(ws->popup.layer_surface);
+        ws->popup.layer_surface = NULL;
+    }
+    if (ws->popup.surface) {
+        wl_surface_destroy(ws->popup.surface);
+        ws->popup.surface = NULL;
+    }
+    ws->popup.configured = false;
+}
+
+static void popup_layer_surface_configure(void *data,
+    struct zwlr_layer_surface_v1 *surface, uint32_t serial,
+    uint32_t width, uint32_t height)
+{
+    struct wl_status *ws = data;
+    zwlr_layer_surface_v1_ack_configure(surface, serial);
+    if (width > 0) ws->popup.width = width;
+    if (height > 0) ws->popup.height = height;
+    if (!ws->popup.buffer) {
+        popup_create_buffer(ws);
+        popup_render(ws);
+    }
+    ws->popup.configured = true;
+}
+
+static void popup_layer_surface_closed(void *data,
+    struct zwlr_layer_surface_v1 *surface)
+{
+    ((struct wl_status *)data)->popup.visible = false;
+}
+
+static const struct zwlr_layer_surface_v1_listener popup_layer_surface_listener = {
+    .configure = popup_layer_surface_configure,
+    .closed = popup_layer_surface_closed,
+};
+
+static void popup_create(struct wl_status *ws, int action)
+{
+    if (ws->popup.visible) popup_destroy(ws);
+
+    memset(&ws->popup, 0, sizeof(ws->popup));
+    ws->popup.width = 175;
+    ws->popup.height = 105;
+    ws->popup.action = action;
+    ws->popup.hovered_btn = -1;
+
+    ws->popup.surface = wl_compositor_create_surface(ws->compositor);
+    ws->popup.layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+        ws->layer_shell, ws->popup.surface, NULL,
+        ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "wlstatus-popup");
+
+    zwlr_layer_surface_v1_add_listener(ws->popup.layer_surface,
+        &popup_layer_surface_listener, ws);
+
+    zwlr_layer_surface_v1_set_size(ws->popup.layer_surface, ws->popup.width, ws->popup.height);
+    zwlr_layer_surface_v1_set_anchor(ws->popup.layer_surface,
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+    zwlr_layer_surface_v1_set_margin(ws->popup.layer_surface,
+        ws->height + 4, BAR_PADDING, 0, 0);
+    zwlr_layer_surface_v1_set_exclusive_zone(ws->popup.layer_surface, 0);
+
+    ws->popup.visible = true;
+    wl_surface_commit(ws->popup.surface);
+}
+
+static void on_timer(struct wl_status *ws)
+{
+    if (!ws->bar || !ws->running) return;
+    bar_update_workspaces(ws->bar);
+    bar_update_system_info(ws->bar);
+    bar_update_updates(ws->bar);
+    bar_update_disk(ws->bar);
+    render(ws);
+}
+
+static void layer_surface_configure(void *data,
+    struct zwlr_layer_surface_v1 *surface, uint32_t serial,
+    uint32_t width, uint32_t height)
+{
+    struct wl_status *ws = data;
+    ws->configure_serial = serial;
+
+    if (width == 0) width = ws->width;
+    if (height == 0) height = config_get_int(ws->cfg, "bar_height", BAR_HEIGHT);
+
+    if (ws->width != (int)width || ws->height != (int)height) {
+        destroy_buffer(ws);
+        ws->width = width;
+        ws->height = height;
+        if (ws->bar) bar_destroy(ws->bar);
+        ws->bar = bar_create(ws->width, ws->height, ws->cfg);
+    }
+
+    if (!ws->bar) ws->bar = bar_create(ws->width, ws->height, ws->cfg);
+    create_buffer(ws);
+    zwlr_layer_surface_v1_ack_configure(surface, serial);
+    ws->configured = true;
+
+    bar_update_workspaces(ws->bar);
+    bar_update_system_info(ws->bar);
+    bar_update_updates(ws->bar);
+    bar_update_disk(ws->bar);
+    render(ws);
+}
+
+static void layer_surface_closed(void *data,
+    struct zwlr_layer_surface_v1 *surface)
+{
+    ((struct wl_status *)data)->running = false;
+}
+
+static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
+    .configure = layer_surface_configure,
+    .closed = layer_surface_closed,
+};
+
+static void pointer_enter(void *data, struct wl_pointer *pointer,
+    uint32_t serial, struct wl_surface *surface,
+    wl_fixed_t sx, wl_fixed_t sy)
+{
+    struct wl_status *ws = data;
+    ws->current_pointer_surface = surface;
+    ws->pointer_x = wl_fixed_to_int(sx);
+    ws->pointer_y = wl_fixed_to_int(sy);
+
+    if (ws->popup.visible && surface == ws->popup.surface)
+        return;
+
+    bar_update_hover(ws->bar, ws->pointer_x, ws->pointer_y);
+    render(ws);
+}
+
+static void pointer_leave(void *data, struct wl_pointer *pointer,
+    uint32_t serial, struct wl_surface *surface)
+{
+    struct wl_status *ws = data;
+    ws->current_pointer_surface = NULL;
+
+    if (ws->popup.visible && surface == ws->popup.surface) {
+        if (ws->popup.hovered_btn != -1) {
+            ws->popup.hovered_btn = -1;
+            popup_render(ws);
+        }
+        return;
+    }
+
+    bar_clear_hover(ws->bar);
+    render(ws);
+}
+
+static void pointer_motion(void *data, struct wl_pointer *pointer,
+    uint32_t time, wl_fixed_t sx, wl_fixed_t sy)
+{
+    struct wl_status *ws = data;
+    int x = wl_fixed_to_int(sx);
+    int y = wl_fixed_to_int(sy);
+    ws->pointer_x = x;
+    ws->pointer_y = y;
+
+    if (ws->popup.visible && ws->current_pointer_surface == ws->popup.surface) {
+        int old = ws->popup.hovered_btn;
+        ws->popup.hovered_btn = -1;
+        if (x >= ws->popup.confirm_btn_x && x < ws->popup.confirm_btn_x + ws->popup.confirm_btn_w &&
+            y >= ws->popup.confirm_btn_y && y < ws->popup.confirm_btn_y + ws->popup.confirm_btn_h)
+            ws->popup.hovered_btn = 0;
+        else if (x >= ws->popup.cancel_btn_x && x < ws->popup.cancel_btn_x + ws->popup.cancel_btn_w &&
+            y >= ws->popup.cancel_btn_y && y < ws->popup.cancel_btn_y + ws->popup.cancel_btn_h)
+            ws->popup.hovered_btn = 1;
+        if (old != ws->popup.hovered_btn)
+            popup_render(ws);
+        return;
+    }
+
+    int old_power = ws->bar->power_hovered;
+    int old_ws = ws->bar->hovered_workspace;
+    bar_update_hover(ws->bar, x, y);
+    if (old_power != ws->bar->power_hovered ||
+        old_ws != ws->bar->hovered_workspace)
+        render(ws);
+}
+
+static void execute_command(const char *cmd)
+{
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl("/bin/sh", "sh", "-c", cmd, NULL);
+        _exit(1);
+    }
+}
+
+static void pointer_button(void *data, struct wl_pointer *pointer,
+    uint32_t serial, uint32_t time, uint32_t button, uint32_t state)
+{
+    struct wl_status *ws = data;
+    if (state != 1) return;
+    if (button != 0x110) return;
+
+    if (ws->popup.visible) {
+        if (ws->current_pointer_surface == ws->popup.surface) {
+            int x = ws->pointer_x, y = ws->pointer_y;
+            if (x >= ws->popup.confirm_btn_x && x < ws->popup.confirm_btn_x + ws->popup.confirm_btn_w &&
+                y >= ws->popup.confirm_btn_y && y < ws->popup.confirm_btn_y + ws->popup.confirm_btn_h) {
+                const char *cmds[] = {"systemctl poweroff", "systemctl reboot", "systemctl suspend"};
+                execute_command(cmds[ws->popup.action]);
+                popup_destroy(ws);
+                return;
+            }
+            if (x >= ws->popup.cancel_btn_x && x < ws->popup.cancel_btn_x + ws->popup.cancel_btn_w &&
+                y >= ws->popup.cancel_btn_y && y < ws->popup.cancel_btn_y + ws->popup.cancel_btn_h) {
+                popup_destroy(ws);
+                return;
+            }
+        } else {
+            popup_destroy(ws);
+            return;
+        }
+    }
+
+    enum click_action action = bar_handle_click(ws->bar,
+        ws->pointer_x, ws->pointer_y);
+
+    if (action == CLICK_POWEROFF || action == CLICK_REBOOT || action == CLICK_SUSPEND) {
+        int a = (action == CLICK_POWEROFF) ? 0 : (action == CLICK_REBOOT) ? 1 : 2;
+        popup_create(ws, a);
+        return;
+    }
+
+    if (action == CLICK_HYPRCTL) {
+        for (int i = 0; i < ws->bar->n_clickables; i++) {
+            struct clickable *c = &ws->bar->clickables[i];
+            if (c->action == CLICK_HYPRCTL &&
+                ws->pointer_x >= c->x && ws->pointer_x < c->x + c->w &&
+                ws->pointer_y >= c->y && ws->pointer_y < c->y + c->h) {
+                execute_command(c->command);
+                break;
+            }
+        }
+    }
+}
+
+static void pointer_axis(void *data, struct wl_pointer *pointer,
+    uint32_t time, uint32_t axis, wl_fixed_t value) {}
+
+static void pointer_frame(void *data, struct wl_pointer *pointer) {}
+
+static const struct wl_pointer_listener pointer_listener = {
+    .enter = pointer_enter,
+    .leave = pointer_leave,
+    .motion = pointer_motion,
+    .button = pointer_button,
+    .axis = pointer_axis,
+    .frame = pointer_frame,
+};
+
+static void seat_capabilities(void *data, struct wl_seat *seat,
+    uint32_t capabilities)
+{
+    struct wl_status *ws = data;
+    if ((capabilities & 1) && !ws->pointer) {
+        ws->pointer = wl_seat_get_pointer(seat);
+        wl_pointer_add_listener(ws->pointer, &pointer_listener, ws);
+    } else if (!(capabilities & 1) && ws->pointer) {
+        wl_pointer_destroy(ws->pointer);
+        ws->pointer = NULL;
+    }
+}
+
+static void seat_name(void *data, struct wl_seat *seat, const char *name) {}
+
+static const struct wl_seat_listener seat_listener = {
+    .capabilities = seat_capabilities,
+    .name = seat_name,
+};
+
+static void registry_global(void *data, struct wl_registry *registry,
+    uint32_t name, const char *interface, uint32_t version)
+{
+    struct wl_status *ws = data;
+
+    if (strcmp(interface, wl_compositor_interface.name) == 0)
+        ws->compositor = wl_registry_bind(registry, name,
+            &wl_compositor_interface, 4);
+    else if (strcmp(interface, wl_shm_interface.name) == 0)
+        ws->shm = wl_registry_bind(registry, name,
+            &wl_shm_interface, 1);
+    else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0)
+        ws->layer_shell = wl_registry_bind(registry, name,
+            &zwlr_layer_shell_v1_interface, 4);
+    else if (strcmp(interface, wl_seat_interface.name) == 0) {
+        ws->seat = wl_registry_bind(registry, name,
+            &wl_seat_interface, 7);
+        wl_seat_add_listener(ws->seat, &seat_listener, ws);
+    }
+}
+
+static void registry_global_remove(void *data,
+    struct wl_registry *registry, uint32_t name) {}
+
+static const struct wl_registry_listener registry_listener = {
+    .global = registry_global,
+    .global_remove = registry_global_remove,
+};
+
+static int setup_layer_surface(struct wl_status *ws)
+{
+    ws->surface = wl_compositor_create_surface(ws->compositor);
+    if (!ws->surface) return -1;
+
+    ws->layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+        ws->layer_shell, ws->surface, NULL,
+        ZWLR_LAYER_SHELL_V1_LAYER_TOP, "wlstatus");
+    if (!ws->layer_surface) return -1;
+
+    zwlr_layer_surface_v1_add_listener(ws->layer_surface,
+        &layer_surface_listener, ws);
+
+    int bh = config_get_int(ws->cfg, "bar_height", BAR_HEIGHT);
+    zwlr_layer_surface_v1_set_size(ws->layer_surface, 0, bh);
+    zwlr_layer_surface_v1_set_anchor(ws->layer_surface,
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+    zwlr_layer_surface_v1_set_exclusive_zone(ws->layer_surface, bh);
+
+    wl_surface_commit(ws->surface);
+    wl_display_roundtrip(ws->display);
+
+    if (!ws->configured) {
+        fprintf(stderr, "surface was not configured\n");
+        return -1;
+    }
+    return 0;
+}
+
+static const char *config_path(void)
+{
+    const char *home = getenv("HOME");
+    if (!home) return NULL;
+    static char buf[512];
+    snprintf(buf, sizeof(buf), "%s/.config/wlstatus/config", home);
+    return buf;
+}
+
+int main(int argc, char *argv[])
+{
+    struct wl_status ws = {0};
+    ws.cfg = config_load(config_path());
+    int bh = config_get_int(ws.cfg, "bar_height", BAR_HEIGHT);
+    ws.width = 1920;
+    ws.height = bh;
+    ws.running = true;
+
+    ws.display = wl_display_connect(NULL);
+    if (!ws.display) {
+        fprintf(stderr, "failed to connect to wayland display\n");
+        return 1;
+    }
+
+    struct wl_registry *registry = wl_display_get_registry(ws.display);
+    wl_registry_add_listener(registry, &registry_listener, &ws);
+    wl_display_roundtrip(ws.display);
+
+    if (!ws.compositor || !ws.shm || !ws.layer_shell) {
+        fprintf(stderr, "missing required wayland globals\n");
+        return 1;
+    }
+
+    if (setup_layer_surface(&ws) < 0)
+        return 1;
+
+    ws.timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    if (ws.timer_fd >= 0) {
+        struct itimerspec ts = {
+            .it_value = { .tv_sec = 1 },
+            .it_interval = { .tv_sec = 1 },
+        };
+        timerfd_settime(ws.timer_fd, 0, &ts, NULL);
+    }
+
+    while (ws.running) {
+        struct pollfd fds[2] = {
+            { .fd = wl_display_get_fd(ws.display), .events = POLLIN },
+            { .fd = ws.timer_fd, .events = POLLIN },
+        };
+        int nfds = ws.timer_fd >= 0 ? 2 : 1;
+        int has_display_data = 0;
+
+        while (wl_display_prepare_read(ws.display) != 0)
+            wl_display_dispatch_pending(ws.display);
+        wl_display_flush(ws.display);
+
+        if (poll(fds, nfds, -1) < 0)
+            break;
+
+        if (fds[0].revents & POLLIN) {
+            wl_display_read_events(ws.display);
+            has_display_data = 1;
+        } else {
+            wl_display_cancel_read(ws.display);
+        }
+
+        if (has_display_data)
+            wl_display_dispatch_pending(ws.display);
+
+        if (ws.timer_fd >= 0 && (fds[1].revents & POLLIN)) {
+            uint64_t exp;
+            read(ws.timer_fd, &exp, sizeof(exp));
+            on_timer(&ws);
+        }
+    }
+
+    if (ws.timer_fd >= 0) close(ws.timer_fd);
+    popup_destroy(&ws);
+    destroy_buffer(&ws);
+    if (ws.pointer) wl_pointer_destroy(ws.pointer);
+    if (ws.seat) wl_seat_destroy(ws.seat);
+    if (ws.layer_surface) zwlr_layer_surface_v1_destroy(ws.layer_surface);
+    if (ws.surface) wl_surface_destroy(ws.surface);
+    if (ws.layer_shell) zwlr_layer_shell_v1_destroy(ws.layer_shell);
+    if (ws.compositor) wl_compositor_destroy(ws.compositor);
+    if (ws.shm) wl_shm_destroy(ws.shm);
+    bar_destroy(ws.bar);
+    config_destroy(ws.cfg);
+    wl_display_disconnect(ws.display);
+    return 0;
+}
