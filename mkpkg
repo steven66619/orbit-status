@@ -25,49 +25,72 @@ case "$TARGET" in
     -h|--help) usage ;;
 esac
 
+check_runtime() {
+    RUNTIME=$(command -v podman || command -v docker)
+    if [ -z "$RUNTIME" ]; then
+        echo "ERROR: need podman or docker for this target"
+        exit 1
+    fi
+}
+
+install_deps_arch() {
+    sudo pacman -S --needed --noconfirm \
+        base-devel wayland wayland-protocols cairo pango \
+        libxkbcommon glib2 2>/dev/null || \
+    sudo pacman -S --needed --noconfirm \
+        wayland wayland-protocols cairo pango
+}
+
+check_build_deps() {
+    for pkg in wayland-client cairo pangocairo; do
+        if ! pkg-config --exists "$pkg" 2>/dev/null; then
+            echo "ERROR: missing $pkg — install build dependencies first"
+            echo "  Arch:  sudo pacman -S base-devel wayland wayland-protocols cairo pango"
+            echo "  Debian: sudo apt install build-essential pkg-config libwayland-dev libcairo2-dev libpango1.0-dev wayland-protocols"
+            echo "  Fedora: sudo dnf install gcc pkgconfig wayland-devel wayland-protocols-devel cairo-devel pango-devel"
+            exit 1
+        fi
+    done
+}
+
 case "$TARGET" in
     arch)
         echo "==> Arch Linux: building and installing natively"
-        sudo pacman -S --needed wayland wayland-protocols cairo pango
+        install_deps_arch
         make clean 2>/dev/null || true
         make
         sudo make install
         ;;
     local)
         echo "==> Local build: installing to /usr/local"
+        check_build_deps
         make clean 2>/dev/null || true
         make
         sudo make install
         ;;
     deb)
         echo "==> Building .deb via Docker/Podman"
-        RUNTIME=$(command -v podman || command -v docker)
-        if [ -z "$RUNTIME" ]; then
-            echo "ERROR: neither podman nor docker found"
-            exit 1
-        fi
+        check_runtime
         $RUNTIME run --rm -v "$PWD:/build:Z" -w /build debian:bookworm \
             sh -c "apt update -qq && apt build-dep -y . && dpkg-buildpackage -us -uc -b"
         ;;
     rpm)
         echo "==> Building .rpm via Docker/Podman"
-        RUNTIME=$(command -v podman || command -v docker)
-        if [ -z "$RUNTIME" ]; then
-            echo "ERROR: neither podman nor docker found"
-            exit 1
-        fi
+        check_runtime
         $RUNTIME run --rm -v "$PWD:/build:Z" -w /build fedora:latest \
             sh -c "dnf install -y -q rpm-build && rpmbuild -ba wlstatus.spec"
         ;;
     deb-native)
         echo "==> Building .deb on Arch with dpkg"
-        sudo pacman -S --needed dpkg
+        sudo pacman -S --needed --noconfirm dpkg base-devel \
+            wayland wayland-protocols cairo pango
         dpkg-buildpackage -d -us -uc -b
         echo "==> .deb written to ../wlstatus_*.deb"
         ;;
     rpm-native)
         echo "==> Building .rpm on Arch with rpmbuild"
-        sudo pacman -S --needed rpm-tools
+        sudo pacman -S --needed --noconfirm rpm-tools base-devel \
+            wayland wayland-protocols cairo pango
         mkdir -p "$HOME/rpmbuild/SOURCES" "$HOME/rpmbuild/SPECS"
         git archive --prefix=wlstatus-1.0/ --format=tar.gz -o "$HOME/rpmbuild/SOURCES/wlstatus-1.0.tar.gz" HEAD
         cp wlstatus.spec "$HOME/rpmbuild/SPECS/"
@@ -75,7 +98,7 @@ case "$TARGET" in
         ;;
     personal-arch)
         echo "==> Building wlstatus-personal Arch package"
-        sudo pacman -S --needed wayland wayland-protocols cairo pango
+        install_deps_arch
         cp PKGBUILD-personal PKGBUILD
         makepkg -f --noconfirm
         mv PKGBUILD.bak PKGBUILD 2>/dev/null || true
@@ -83,22 +106,14 @@ case "$TARGET" in
         ;;
     personal-deb)
         echo "==> Building wlstatus-personal .deb via Docker/Podman"
-        RUNTIME=$(command -v podman || command -v docker)
-        if [ -z "$RUNTIME" ]; then
-            echo "ERROR: neither podman nor docker found"
-            exit 1
-        fi
+        check_runtime
         $RUNTIME run --rm -v "$PWD:/build:Z" -w /build debian:bookworm \
             sh -c "apt update -qq && apt install -y -q build-essential pkg-config libwayland-dev libcairo2-dev libpango1.0-dev wayland-protocols && cp -r debian-personal debian && dpkg-buildpackage -d -us -uc -b"
         echo "==> .deb written to ../wlstatus-personal_*.deb"
         ;;
     personal-rpm)
         echo "==> Building wlstatus-personal .rpm via Docker/Podman"
-        RUNTIME=$(command -v podman || command -v docker)
-        if [ -z "$RUNTIME" ]; then
-            echo "ERROR: neither podman nor docker found"
-            exit 1
-        fi
+        check_runtime
         $RUNTIME run --rm -v "$PWD:/build:Z" -w /build fedora:latest \
             sh -c "dnf install -y -q rpm-build && rpmbuild -ba wlstatus-personal.spec"
         echo "==> .rpm written to \$HOME/rpmbuild/RPMS/"
