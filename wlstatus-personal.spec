@@ -6,7 +6,7 @@ Release: 1%{?dist}
 Summary: wlstatus + personal dotfiles (shell, hyprland, waybar, kitty, fish)
 
 License: MIT
-URL: https://github.com/steven66619/wlstatus
+URL: https://github.com/steven66619/wlstatus-personal
 Source0: %{name}-%{version}.tar.gz
 
 BuildRequires: gcc

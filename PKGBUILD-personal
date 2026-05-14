@@ -4,11 +4,11 @@ pkgver=1.0
 pkgrel=1
 pkgdesc="wlstatus + personal dotfiles (shell, hyprland, waybar, kitty, fish)"
 arch=('x86_64' 'aarch64')
-url="https://github.com/steven66619/wlstatus"
+url="https://github.com/steven66619/wlstatus-personal"
 license=('MIT')
 depends=('wayland' 'cairo' 'pango' 'glib2')
 makedepends=('wayland-protocols')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/wlstatus/archive/refs/heads/personal.tar.gz")
+source=("$pkgname::git+ssh://git@github.com/steven66619/wlstatus-personal.git#branch=personal")
 sha256sums=('SKIP')
 
 build() {

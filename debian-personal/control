@@ -5,7 +5,7 @@ Maintainer: steven66619 <ste@example.com>
 Build-Depends: debhelper-compat (= 13), pkg-config, libwayland-dev,
  libcairo2-dev, libpango1.0-dev, wayland-protocols
 Standards-Version: 4.6.2
-Homepage: https://github.com/steven66619/wlstatus
+Homepage: https://github.com/steven66619/wlstatus-personal
 
 Package: wlstatus-personal
 Architecture: any
