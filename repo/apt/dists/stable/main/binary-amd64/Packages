@@ -54,3 +54,23 @@ Description: wlstatus + personal dotfiles (shell, hyprland, waybar, kitty, fish)
  Kitty, Fish, and other tools.
  Run 'wlstatus-personal-setup' after install to deploy dotfiles to $HOME.
 
+Package: wlstatus-personal
+Version: 1.0-1
+Architecture: amd64
+Maintainer: steven66619 <ste@example.com>
+Depends: libcairo2, libpango-1.0-0, libpangocairo-1.0-0,
+ libwayland-client0, libglib2.0-0, libharfbuzz0b,
+ libpixman-1-0, libpng16-16, libsystemd0, pcmanfm,
+ hyprland, waybar, kitty, fish, thunar, kate,
+ libfm, bash, zsh, git
+Filename: /home/ste/Projects/wlstatus/repo/apt/pool/main/wlstatus-personal_1.0-1_amd64.deb
+Size: 62372
+MD5sum: 84e9c7d3c7116a896278132cf6b025e8
+SHA1: c336e0c32d21ad6d9e0f071a962dae11b4f80d7b
+SHA256: a9ea3a1fc6648d29c969de2e01978b29577be4c2e480d755864d5c388830f571
+Description: wlstatus + personal dotfiles (shell, hyprland, waybar, kitty, fish)
+ A lightweight status bar for Hyprland, Sway, and other wlr-layer-shell
+ compositors, bundled with personal dotfiles for shell, Hyprland, Waybar,
+ Kitty, Fish, and other tools.
+ Run 'wlstatus-personal-setup' after install to deploy dotfiles to $HOME.
+
