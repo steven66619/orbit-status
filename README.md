@@ -8,6 +8,14 @@ Packages are hosted at `https://steven66619.github.io/wlstatus/`.
 
 ### DNF (Fedora / RHEL)
 
+First enable the Hyprland COPR (not in Fedora 44+ main repos):
+
+```bash
+sudo dnf copr enable ashbuk/Hyprland-Fedora
+```
+
+Then add the personal repo:
+
 ```bash
 sudo dnf config-manager addrepo --from-repofile=https://steven66619.github.io/wlstatus/wlstatus-personal.repo
 sudo dnf install wlstatus-personal
