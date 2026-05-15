@@ -339,129 +339,274 @@ void bar_render(struct bar *bar, cairo_t *cr)
     int ws_start = 48;
     draw_workspaces(bar, cr, bar->height, ws_start);
 
-    draw_power_buttons(bar, cr, bar->height);
+    if (config_get_int(bar->cfg, "show_power", 1))
+        draw_power_buttons(bar, cr, bar->height);
 
     int pw_btn_size = 24;
     int pw_total_w = pw_btn_size * 3 + 6 * 2;
-    int pw_start = bar->width - BAR_PADDING - pw_total_w;
+    int pw_start = config_get_int(bar->cfg, "show_power", 1)
+        ? bar->width - BAR_PADDING - pw_total_w
+        : bar->width;
 
     int cx = ws_start + 10;
     int cx_end = pw_start - 10;
-    int cw = 0;
 
     float acc[4];
     float def_acc[] = {0.0f, 0.90f, 1.0f, 1.0f};
     config_get_color(bar->cfg, "accent_color", acc, def_acc);
 
-    {
-        time_t t = time(NULL);
-        struct tm *tm = localtime(&t);
-        char buf[64];
-        strftime(buf, sizeof(buf), "%a %b %d  %H:%M", tm);
+    int tw = 0, th = 0;
+    int show_clock = config_get_int(bar->cfg, "show_clock", 1);
+
+    if (show_clock) {
         PangoLayout *lay = pango_cairo_create_layout(cr);
         PangoFontDescription *fd = pango_font_description_from_string("Sans 11");
         pango_layout_set_font_description(lay, fd);
         pango_font_description_free(fd);
+        time_t t = time(NULL);
+        struct tm *tm = localtime(&t);
+        char buf[64];
+        strftime(buf, sizeof(buf), "%a %b %d  %H:%M", tm);
         pango_layout_set_text(lay, buf, -1);
-        int tw, th;
         pango_layout_get_pixel_size(lay, &tw, &th);
+        g_object_unref(lay);
+    }
 
-        char cpu_buf[32], mem_buf[32], upd_buf[32], dsk_buf[32];
-        snprintf(cpu_buf, sizeof(cpu_buf), "CPU %d%%", bar->cpu_percent);
-        snprintf(mem_buf, sizeof(mem_buf), "MEM %d%%", bar->mem_percent);
-        snprintf(upd_buf, sizeof(upd_buf), "UPD %d", bar->updates_count);
-        snprintf(dsk_buf, sizeof(dsk_buf), "DSK %d%%", bar->disk_percent);
+    struct {
+        char label[64];
+        char click_key[32];
+        int w, h;
+        float border[3];
+        float fill[4];
+    } pills[8];
+    int npills = 0;
+
+    if (config_get_int(bar->cfg, "show_cpu", 1)) {
+        const char *ico = config_get(bar->cfg, "cpu_icon", "CPU");
+        snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d%%", ico, bar->cpu_percent);
+        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_cpu");
+        pills[npills].border[0] = acc[0]; pills[npills].border[1] = acc[1]; pills[npills].border[2] = acc[2];
+        pills[npills].fill[0] = acc[0]*0.28f; pills[npills].fill[1] = acc[1]*0.28f; pills[npills].fill[2] = acc[2]*0.28f; pills[npills].fill[3] = 0.35f;
+        npills++;
+    }
+    if (config_get_int(bar->cfg, "show_mem", 1)) {
+        const char *ico = config_get(bar->cfg, "mem_icon", "MEM");
+        snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d%%", ico, bar->mem_percent);
+        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_mem");
+        pills[npills].border[0] = acc[0]; pills[npills].border[1] = acc[1]; pills[npills].border[2] = acc[2];
+        pills[npills].fill[0] = acc[0]*0.28f; pills[npills].fill[1] = acc[1]*0.28f; pills[npills].fill[2] = acc[2]*0.28f; pills[npills].fill[3] = 0.35f;
+        npills++;
+    }
+    if (config_get_int(bar->cfg, "show_updates", 1)) {
+        const char *ico = config_get(bar->cfg, "updates_icon", "UPD");
+        snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d", ico, bar->updates_count);
+        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_updates");
+        pills[npills].border[0] = 0.80f; pills[npills].border[1] = 0.20f; pills[npills].border[2] = 1.0f;
+        pills[npills].fill[0] = 0.30f; pills[npills].fill[1] = 0.05f; pills[npills].fill[2] = 0.40f; pills[npills].fill[3] = 0.30f;
+        if (bar->updates_count > 0) {
+            float alert[4];
+            float def_alert[] = {1.0f, 0.2f, 0.2f, 1.0f};
+            if (config_get_color(bar->cfg, "updates_alert_color", alert, def_alert)) {
+                pills[npills].border[0] = alert[0]; pills[npills].border[1] = alert[1]; pills[npills].border[2] = alert[2];
+                pills[npills].fill[0] = alert[0]*0.3f; pills[npills].fill[1] = alert[1]*0.3f; pills[npills].fill[2] = alert[2]*0.3f; pills[npills].fill[3] = 0.3f;
+            }
+        }
+        npills++;
+    }
+    if (config_get_int(bar->cfg, "show_disk", 1)) {
+        const char *ico = config_get(bar->cfg, "disk_icon", "DSK");
+        snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d%%", ico, bar->disk_percent);
+        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_disk");
+        pills[npills].border[0] = 0.20f; pills[npills].border[1] = 0.85f; pills[npills].border[2] = 0.40f;
+        pills[npills].fill[0] = 0.05f; pills[npills].fill[1] = 0.30f; pills[npills].fill[2] = 0.10f; pills[npills].fill[3] = 0.30f;
+        int warn_thresh = config_get_int(bar->cfg, "disk_warn_threshold", 90);
+        if (bar->disk_percent >= warn_thresh) {
+            float warn[4];
+            float def_warn[] = {1.0f, 0.6f, 0.0f, 1.0f};
+            if (config_get_color(bar->cfg, "disk_warn_color", warn, def_warn)) {
+                pills[npills].border[0] = warn[0]; pills[npills].border[1] = warn[1]; pills[npills].border[2] = warn[2];
+                pills[npills].fill[0] = warn[0]*0.3f; pills[npills].fill[1] = warn[1]*0.3f; pills[npills].fill[2] = warn[2]*0.3f; pills[npills].fill[3] = 0.3f;
+            }
+        }
+        npills++;
+    }
+    if (config_get_int(bar->cfg, "show_volume", 1)) {
+        const char *ico = config_get(bar->cfg, "volume_icon", "VOL");
+        if (bar->volume_muted)
+            snprintf(pills[npills].label, sizeof(pills[npills].label), "%s MUTED", ico);
+        else
+            snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d%%", ico, bar->volume_percent);
+        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_volume");
+        pills[npills].border[0] = 0.20f; pills[npills].border[1] = 0.60f; pills[npills].border[2] = 1.0f;
+        pills[npills].fill[0] = 0.05f; pills[npills].fill[1] = 0.20f; pills[npills].fill[2] = 0.40f; pills[npills].fill[3] = 0.30f;
+        npills++;
+    }
+    if (config_get_int(bar->cfg, "show_network", 1)) {
+        if (bar->network_ssid[0])
+            snprintf(pills[npills].label, sizeof(pills[npills].label), "%s", bar->network_ssid);
+        else
+            snprintf(pills[npills].label, sizeof(pills[npills].label), "NO NET");
+        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_network");
+        pills[npills].border[0] = 0.20f; pills[npills].border[1] = 0.90f; pills[npills].border[2] = 0.20f;
+        pills[npills].fill[0] = 0.05f; pills[npills].fill[1] = 0.30f; pills[npills].fill[2] = 0.05f; pills[npills].fill[3] = 0.30f;
+        npills++;
+    }
+    if (config_get_int(bar->cfg, "show_battery", 1) && bar->battery_present) {
+        const char *ico = config_get(bar->cfg, "battery_icon", "BAT");
+        if (bar->battery_charging)
+            snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d%%+", ico, bar->battery_percent);
+        else
+            snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d%%", ico, bar->battery_percent);
+        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_battery");
+        pills[npills].border[0] = 0.90f; pills[npills].border[1] = 0.90f; pills[npills].border[2] = 0.20f;
+        pills[npills].fill[0] = 0.30f; pills[npills].fill[1] = 0.30f; pills[npills].fill[2] = 0.05f; pills[npills].fill[3] = 0.30f;
+        npills++;
+    }
+
+    for (int ci = 0; ci < MAX_CUSTOM_MODULES; ci++) {
+        char showkey[32];
+        snprintf(showkey, sizeof(showkey), "show_custom_%d", ci + 1);
+        if (!config_get_int(bar->cfg, showkey, 0)) continue;
+
+        if (!bar->custom_modules[ci].output[0]) continue;
+
+        char prefix[64] = "";
+        char prefkey[32];
+        snprintf(prefkey, sizeof(prefkey), "custom_%d_prefix", ci + 1);
+        const char *p = config_get(bar->cfg, prefkey, "");
+        if (p[0]) snprintf(prefix, sizeof(prefix), "%s ", p);
+
+        snprintf(pills[npills].label, sizeof(pills[npills].label), "%s%s", prefix, bar->custom_modules[ci].output);
+
+        char clickkey[32];
+        snprintf(clickkey, sizeof(clickkey), "click_custom_%d", ci + 1);
+        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "%s", clickkey);
+
+        char colkey[32];
+        float col[4];
+        float def_col[] = {0.5f, 0.5f, 1.0f, 1.0f};
+        snprintf(colkey, sizeof(colkey), "custom_%d_color", ci + 1);
+        if (!config_get_color(bar->cfg, colkey, col, def_col)) {
+            col[0] = def_col[0]; col[1] = def_col[1]; col[2] = def_col[2];
+        }
+        pills[npills].border[0] = col[0]; pills[npills].border[1] = col[1]; pills[npills].border[2] = col[2];
+        pills[npills].fill[0] = col[0]*0.3f; pills[npills].fill[1] = col[1]*0.3f; pills[npills].fill[2] = col[2]*0.3f; pills[npills].fill[3] = 0.3f;
+        npills++;
+    }
+
+    if (show_clock || npills > 0) {
+        int pill_pad_h = config_get_int(bar->cfg, "pill_pad_h", 4);
+        int pill_pad_w = config_get_int(bar->cfg, "pill_pad_w", 8);
+        int pill_gap = config_get_int(bar->cfg, "pill_gap", 6);
+        int clock_pad = (show_clock && npills > 0) ? 14 : 0;
 
         PangoFontDescription *fd_s = pango_font_description_from_string("Sans Bold 9");
-        PangoLayout *lay_cpu = pango_cairo_create_layout(cr);
-        pango_layout_set_font_description(lay_cpu, fd_s);
-        pango_layout_set_text(lay_cpu, cpu_buf, -1);
-        int cpu_w, cpu_h;
-        pango_layout_get_pixel_size(lay_cpu, &cpu_w, &cpu_h);
+        PangoLayout *l = pango_cairo_create_layout(cr);
+        pango_layout_set_font_description(l, fd_s);
 
-        PangoLayout *lay_mem = pango_cairo_create_layout(cr);
-        pango_layout_set_font_description(lay_mem, fd_s);
-        pango_layout_set_text(lay_mem, mem_buf, -1);
-        int mem_w, mem_h;
-        pango_layout_get_pixel_size(lay_mem, &mem_w, &mem_h);
+        int total_pill_w = 0;
+        int pill_h = 0;
+        for (int i = 0; i < npills; i++) {
+            pango_layout_set_text(l, pills[i].label, -1);
+            pango_layout_get_pixel_size(l, &pills[i].w, &pills[i].h);
+            total_pill_w += pills[i].w + pill_pad_w * 2;
+            if (i < npills - 1) total_pill_w += pill_gap;
+            if (pills[i].h > pill_h) pill_h = pills[i].h;
+        }
+        if (npills > 0) pill_h += pill_pad_h * 2;
 
-        PangoLayout *lay_upd = pango_cairo_create_layout(cr);
-        pango_layout_set_font_description(lay_upd, fd_s);
-        pango_layout_set_text(lay_upd, upd_buf, -1);
-        int upd_w, upd_h;
-        pango_layout_get_pixel_size(lay_upd, &upd_w, &upd_h);
-
-        PangoLayout *lay_dsk = pango_cairo_create_layout(cr);
-        pango_layout_set_font_description(lay_dsk, fd_s);
-        pango_layout_set_text(lay_dsk, dsk_buf, -1);
-        int dsk_w, dsk_h;
-        pango_layout_get_pixel_size(lay_dsk, &dsk_w, &dsk_h);
-        pango_font_description_free(fd_s);
-
-        int pill_pad_h = 4;
-        int pill_pad_w = 8;
-        int pill_gap = 6;
-        int pill_h = cpu_h + pill_pad_h * 2;
-        int total_w = tw + 14
-            + (cpu_w + pill_pad_w * 2) + pill_gap
-            + (mem_w + pill_pad_w * 2) + pill_gap
-            + (upd_w + pill_pad_w * 2) + pill_gap
-            + (dsk_w + pill_pad_w * 2);
-
-        cw = total_w;
-        int center = cx + (cx_end - cx - cw) / 2;
+        int total_w = tw + clock_pad + total_pill_w;
+        int center = cx + (cx_end - cx - total_w) / 2;
         if (center < cx) center = cx;
 
-        cairo_set_source_rgb(cr, acc[0], acc[1], acc[2]);
-        cairo_move_to(cr, center, (bar->height - th) / 2.0 + 1);
-        pango_cairo_show_layout(cr, lay);
+        int clock_x = center;
+        int pill_x = center + tw + clock_pad;
 
-        int pill_x = center + tw + 14;
-        int pill_y = (bar->height - pill_h) / 2;
-        double pill_r = pill_h / 2.0;
-        int pill_cy = pill_y + pill_h / 2;
-
-        int p_widths[] = {cpu_w, mem_w, upd_w, dsk_w};
-        int p_heights[] = {cpu_h, mem_h, upd_h, dsk_h};
-        PangoLayout *p_layouts[] = {lay_cpu, lay_mem, lay_upd, lay_dsk};
-        float p_border_r[][3] = {
-            {acc[0], acc[1], acc[2]},
-            {acc[0], acc[1], acc[2]},
-            {0.80, 0.20, 1.0},
-            {0.20, 0.85, 0.40},
-        };
-        float p_fill_r[][4] = {
-            {acc[0] * 0.28f, acc[1] * 0.28f, acc[2] * 0.28f, 0.35f},
-            {acc[0] * 0.28f, acc[1] * 0.28f, acc[2] * 0.28f, 0.35f},
-            {0.30, 0.05, 0.40, 0.30},
-            {0.05, 0.30, 0.10, 0.30},
-        };
-
-        for (int pi = 0; pi < 4; pi++) {
-            int pw = p_widths[pi];
-            int ph = p_heights[pi];
-
-            cairo_set_source_rgba(cr, p_fill_r[pi][0], p_fill_r[pi][1], p_fill_r[pi][2], p_fill_r[pi][3]);
-            draw_rounded_rect(cr, pill_x, pill_y, pw + pill_pad_w * 2, pill_h, pill_r);
-            cairo_fill(cr);
-
-            cairo_set_source_rgba(cr, p_border_r[pi][0], p_border_r[pi][1], p_border_r[pi][2], 0.5);
-            cairo_set_line_width(cr, 1);
-            draw_rounded_rect(cr, pill_x, pill_y, pw + pill_pad_w * 2, pill_h, pill_r);
-            cairo_stroke(cr);
-
-            cairo_set_source_rgb(cr, p_border_r[pi][0], p_border_r[pi][1], p_border_r[pi][2]);
-            cairo_move_to(cr, pill_x + pill_pad_w, pill_cy - ph / 2.0 + 1);
-            pango_cairo_show_layout(cr, p_layouts[pi]);
-
-            pill_x += pw + pill_pad_w * 2 + pill_gap;
+        if (show_clock) {
+            const char *dfmt = config_get(bar->cfg, "date_format", "%a %b %d  %H:%M");
+            cairo_set_source_rgb(cr, acc[0], acc[1], acc[2]);
+            cairo_move_to(cr, clock_x, (bar->height - th) / 2.0 + 1);
+            PangoLayout *lay = pango_cairo_create_layout(cr);
+            PangoFontDescription *fd = pango_font_description_from_string("Sans 11");
+            pango_layout_set_font_description(lay, fd);
+            pango_font_description_free(fd);
+            time_t t = time(NULL);
+            struct tm *tm = localtime(&t);
+            char buf[64];
+            strftime(buf, sizeof(buf), dfmt, tm);
+            pango_layout_set_text(lay, buf, -1);
+            pango_cairo_show_layout(cr, lay);
+            g_object_unref(lay);
         }
 
-        g_object_unref(lay_dsk);
-        g_object_unref(lay_upd);
-        g_object_unref(lay_mem);
-        g_object_unref(lay_cpu);
-        g_object_unref(lay);
+        if (npills > 0) {
+            int pill_y = (bar->height - pill_h) / 2;
+            double pill_r = pill_h / 2.0;
+            int pill_cy = pill_y + pill_h / 2;
+
+            for (int i = 0; i < npills; i++) {
+                int pw = pills[i].w;
+                int ph = pills[i].h;
+
+                cairo_set_source_rgba(cr, pills[i].fill[0], pills[i].fill[1], pills[i].fill[2], pills[i].fill[3]);
+                draw_rounded_rect(cr, pill_x, pill_y, pw + pill_pad_w * 2, pill_h, pill_r);
+                cairo_fill(cr);
+
+                cairo_set_source_rgba(cr, pills[i].border[0], pills[i].border[1], pills[i].border[2], 0.5);
+                cairo_set_line_width(cr, 1);
+                draw_rounded_rect(cr, pill_x, pill_y, pw + pill_pad_w * 2, pill_h, pill_r);
+                cairo_stroke(cr);
+
+                cairo_set_source_rgb(cr, pills[i].border[0], pills[i].border[1], pills[i].border[2]);
+                cairo_move_to(cr, pill_x + pill_pad_w, pill_cy - ph / 2.0 + 1);
+                pango_layout_set_text(l, pills[i].label, -1);
+                pango_cairo_show_layout(cr, l);
+
+                if (bar->n_clickables < 32 && pills[i].click_key[0]) {
+                    const char *cmd = config_get(bar->cfg, pills[i].click_key, "");
+                    bar->clickables[bar->n_clickables] = (struct clickable){
+                        .x = pill_x, .y = pill_y,
+                        .w = pw + pill_pad_w * 2, .h = pill_h,
+                        .action = cmd[0] ? CLICK_RUN : CLICK_NONE,
+                    };
+                    if (cmd[0])
+                        snprintf(bar->clickables[bar->n_clickables].command,
+                            sizeof(bar->clickables[bar->n_clickables].command), "%s", cmd);
+
+                    const char *tcmd = config_get(bar->cfg, "tooltip_cmd", "");
+                    if (!tcmd[0]) {
+                        const char *tkeys[] = {"cpu", "mem", "updates", "disk", "volume", "network", "battery"};
+                        const char *tcmds[] = {
+                            "ps -eo pid,%%cpu,comm --sort=-%%cpu 2>/dev/null | head -6",
+                            "ps -eo pid,%%mem,comm --sort=-%%mem 2>/dev/null | head -6",
+                            "pacman -Qu 2>/dev/null | head -8 || echo none",
+                            "df -h 2>/dev/null",
+                            "pamixer --get-volume; pamixer --get-mute",
+                            "iw dev 2>/dev/null | awk '/Interface/{print $2}' | head -1 | xargs -r iw dev link 2>/dev/null || nmcli -t dev status 2>/dev/null | head -3",
+                            "cat /sys/class/power_supply/BAT0/uevent 2>/dev/null || echo no battery",
+                        };
+                        int tsz = sizeof(tkeys) / sizeof(tkeys[0]);
+                        for (int ti = 0; ti < tsz && ti < 7; ti++) {
+                            char tk[32];
+                            snprintf(tk, sizeof(tk), "click_%s", tkeys[ti]);
+                            if (strcmp(pills[i].click_key, tk) == 0) {
+                                snprintf(bar->clickables[bar->n_clickables].tooltip_cmd,
+                                    sizeof(bar->clickables[bar->n_clickables].tooltip_cmd), "%s", tcmds[ti]);
+                                break;
+                            }
+                        }
+                    } else {
+                        snprintf(bar->clickables[bar->n_clickables].tooltip_cmd,
+                            sizeof(bar->clickables[bar->n_clickables].tooltip_cmd), "%s", tcmd);
+                    }
+                    bar->n_clickables++;
+                }
+
+                pill_x += pw + pill_pad_w * 2 + pill_gap;
+            }
+        }
+
+        if (l) { pango_font_description_free(fd_s); g_object_unref(l); }
     }
 }
 
@@ -544,8 +689,23 @@ void bar_update_workspaces(struct bar *bar)
 void bar_update_updates(struct bar *bar)
 {
     time_t now = time(NULL);
-    if (now - bar->updates_last_check < 120) return;
+    int interval = config_get_int(bar->cfg, "update_interval", 30);
+    if (now - bar->updates_last_check < interval) return;
     bar->updates_last_check = now;
+
+    const char *custom_cmd = config_get(bar->cfg, "update_cmd", "");
+    if (custom_cmd[0]) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "%s 2>/dev/null | wc -l", custom_cmd);
+        FILE *fp = popen(buf, "r");
+        if (fp) {
+            char line[32];
+            if (fgets(line, sizeof(line), fp))
+                bar->updates_count = atoi(line);
+            pclose(fp);
+        }
+        return;
+    }
 
     FILE *fp = NULL;
     if (access("/usr/bin/apt-get", X_OK) == 0)
@@ -566,11 +726,13 @@ void bar_update_updates(struct bar *bar)
 void bar_update_disk(struct bar *bar)
 {
     time_t now = time(NULL);
-    if (now - bar->disk_last_check < 120) return;
+    int interval = config_get_int(bar->cfg, "disk_interval", 120);
+    if (now - bar->disk_last_check < interval) return;
     bar->disk_last_check = now;
 
+    const char *path = config_get(bar->cfg, "disk_path", "/");
     struct statvfs buf;
-    if (statvfs("/", &buf) == 0) {
+    if (statvfs(path, &buf) == 0) {
         unsigned long total = buf.f_blocks * buf.f_frsize;
         unsigned long avail = buf.f_bavail * buf.f_frsize;
         unsigned long used = total - avail;
@@ -610,5 +772,105 @@ void bar_update_system_info(struct bar *bar)
         if (total > 0)
             bar->mem_percent = (int)(100 * (total - available) / total);
         fclose(fp);
+    }
+}
+
+void bar_update_volume(struct bar *bar)
+{
+    FILE *fp = popen("pamixer --get-volume 2>/dev/null", "r");
+    if (fp) {
+        char line[16];
+        if (fgets(line, sizeof(line), fp))
+            bar->volume_percent = atoi(line);
+        pclose(fp);
+    }
+    fp = popen("pamixer --get-mute 2>/dev/null", "r");
+    if (fp) {
+        char line[16];
+        if (fgets(line, sizeof(line), fp))
+            bar->volume_muted = (line[0] == 't');
+        pclose(fp);
+    }
+}
+
+void bar_update_network(struct bar *bar)
+{
+    bar->network_ssid[0] = '\0';
+
+    FILE *fp = popen("nmcli -t -f active,ssid dev wifi 2>/dev/null | grep '^yes:' | cut -d: -f2", "r");
+    if (fp) {
+        if (fgets(bar->network_ssid, sizeof(bar->network_ssid), fp)) {
+            char *nl = strchr(bar->network_ssid, '\n');
+            if (nl) *nl = '\0';
+        }
+        pclose(fp);
+        if (bar->network_ssid[0]) return;
+    }
+
+    fp = popen("iw dev 2>/dev/null | awk '/Interface/{print $2}'", "r");
+    if (fp) {
+        char iface[32];
+        while (fgets(iface, sizeof(iface), fp)) {
+            char *nl = strchr(iface, '\n');
+            if (nl) *nl = '\0';
+            if (!iface[0]) continue;
+            char cmd[128];
+            snprintf(cmd, sizeof(cmd), "iw dev %s link 2>/dev/null | awk '/SSID/{print $2}'", iface);
+            FILE *f2 = popen(cmd, "r");
+            if (f2) {
+                if (fgets(bar->network_ssid, sizeof(bar->network_ssid), f2)) {
+                    char *nl2 = strchr(bar->network_ssid, '\n');
+                    if (nl2) *nl2 = '\0';
+                }
+                pclose(f2);
+                if (bar->network_ssid[0]) break;
+            }
+        }
+        pclose(fp);
+    }
+}
+
+void bar_update_battery(struct bar *bar)
+{
+    bar->battery_present = false;
+    FILE *fp = fopen("/sys/class/power_supply/BAT0/uevent", "r");
+    if (!fp) return;
+    bar->battery_present = true;
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        if (sscanf(line, "POWER_SUPPLY_CAPACITY=%d", &bar->battery_percent) == 1)
+            continue;
+        if (strncmp(line, "POWER_SUPPLY_STATUS=Charging", 28) == 0)
+            bar->battery_charging = true;
+        else if (strncmp(line, "POWER_SUPPLY_STATUS=Full", 24) == 0)
+            bar->battery_percent = 100;
+    }
+    fclose(fp);
+}
+
+void bar_update_custom_modules(struct bar *bar)
+{
+    for (int i = 0; i < MAX_CUSTOM_MODULES; i++) {
+        char key[32];
+        snprintf(key, sizeof(key), "custom_%d_cmd", i + 1);
+        const char *cmd = config_get(bar->cfg, key, "");
+        if (!cmd[0]) continue;
+
+        char intkey[32];
+        snprintf(intkey, sizeof(intkey), "custom_%d_interval", i + 1);
+        int interval = config_get_int(bar->cfg, intkey, 60);
+
+        time_t now = time(NULL);
+        if (now - bar->custom_modules[i].last_check < interval)
+            continue;
+        bar->custom_modules[i].last_check = now;
+
+        FILE *fp = popen(cmd, "r");
+        if (!fp) continue;
+        if (fgets(bar->custom_modules[i].output, sizeof(bar->custom_modules[i].output), fp)) {
+            char *nl = strchr(bar->custom_modules[i].output, '\n');
+            if (nl) *nl = '\0';
+        }
+        pclose(fp);
     }
 }

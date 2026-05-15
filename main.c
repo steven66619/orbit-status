@@ -10,11 +10,16 @@
 #include <wayland-client.h>
 #include <poll.h>
 #include <sys/timerfd.h>
+#include <sys/inotify.h>
+#include <signal.h>
+#include <errno.h>
 #include "wlr-layer-shell-unstable-v1-client.h"
 #include <cairo.h>
 #include <pango/pangocairo.h>
 #include "bar.h"
 #include "config.h"
+
+void config_destroy(struct config *cfg);
 
 struct wl_status {
     struct wl_display *display;
@@ -41,6 +46,22 @@ struct wl_status {
     struct wl_surface *current_pointer_surface;
 
     int timer_fd;
+
+    int inotify_fd;
+
+    struct {
+        struct wl_surface *surface;
+        struct zwlr_layer_surface_v1 *layer_surface;
+        struct wl_buffer *buffer;
+        cairo_surface_t *cairo_surface;
+        cairo_t *cr;
+        void *shm_data;
+        int width, height;
+        bool visible, configured;
+        char text[512];
+        int hovered_clickable;
+        int hover_x, hover_y;
+    } tooltip;
 
     struct {
         struct wl_surface *surface;
@@ -295,13 +316,195 @@ static void popup_create(struct wl_status *ws, int action)
 
     zwlr_layer_surface_v1_set_size(ws->popup.layer_surface, ws->popup.width, ws->popup.height);
     zwlr_layer_surface_v1_set_anchor(ws->popup.layer_surface,
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-    zwlr_layer_surface_v1_set_margin(ws->popup.layer_surface,
-        ws->height + 4, BAR_PADDING, 0, 0);
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+    const char *anchor_str = config_get(ws->cfg, "bar_anchor", "top");
+    int bar_on_bottom = (strcmp(anchor_str, "bottom") == 0);
+    if (bar_on_bottom) {
+        zwlr_layer_surface_v1_set_anchor(ws->popup.layer_surface,
+            ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+        zwlr_layer_surface_v1_set_margin(ws->popup.layer_surface,
+            0, BAR_PADDING, ws->height + 4, 0);
+    } else {
+        zwlr_layer_surface_v1_set_margin(ws->popup.layer_surface,
+            ws->height + 4, BAR_PADDING, 0, 0);
+    }
     zwlr_layer_surface_v1_set_exclusive_zone(ws->popup.layer_surface, 0);
 
     ws->popup.visible = true;
     wl_surface_commit(ws->popup.surface);
+}
+
+static void tooltip_destroy(struct wl_status *ws)
+{
+    if (!ws->tooltip.visible) return;
+    ws->tooltip.visible = false;
+    ws->tooltip.hovered_clickable = -1;
+    if (ws->tooltip.buffer) {
+        cairo_destroy(ws->tooltip.cr);
+        ws->tooltip.cr = NULL;
+        cairo_surface_destroy(ws->tooltip.cairo_surface);
+        ws->tooltip.cairo_surface = NULL;
+        if (ws->tooltip.shm_data) {
+            int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->tooltip.width);
+            munmap(ws->tooltip.shm_data, stride * ws->tooltip.height);
+        }
+        ws->tooltip.shm_data = NULL;
+        wl_buffer_destroy(ws->tooltip.buffer);
+        ws->tooltip.buffer = NULL;
+    }
+    if (ws->tooltip.layer_surface) {
+        zwlr_layer_surface_v1_destroy(ws->tooltip.layer_surface);
+        ws->tooltip.layer_surface = NULL;
+    }
+    if (ws->tooltip.surface) {
+        wl_surface_destroy(ws->tooltip.surface);
+        ws->tooltip.surface = NULL;
+    }
+    ws->tooltip.configured = false;
+}
+
+static void tooltip_layer_surface_configure(void *data,
+    struct zwlr_layer_surface_v1 *surface, uint32_t serial,
+    uint32_t width, uint32_t height)
+{
+    struct wl_status *ws = data;
+    zwlr_layer_surface_v1_ack_configure(surface, serial);
+    if (width > 0) ws->tooltip.width = width;
+    if (height > 0) ws->tooltip.height = height;
+    if (!ws->tooltip.buffer) {
+        int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->tooltip.width);
+        int size = stride * ws->tooltip.height;
+        int shm_fd = create_shm_fd(size);
+        if (shm_fd < 0) return;
+        struct wl_shm_pool *pool = wl_shm_create_pool(ws->shm, shm_fd, size);
+        ws->tooltip.buffer = wl_shm_pool_create_buffer(pool, 0,
+            ws->tooltip.width, ws->tooltip.height, stride, WL_SHM_FORMAT_ARGB8888);
+        wl_shm_pool_destroy(pool);
+        ws->tooltip.shm_data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+        close(shm_fd);
+        if (ws->tooltip.shm_data == MAP_FAILED) { ws->tooltip.shm_data = NULL; return; }
+        ws->tooltip.cairo_surface = cairo_image_surface_create_for_data(
+            ws->tooltip.shm_data, CAIRO_FORMAT_ARGB32, ws->tooltip.width, ws->tooltip.height, stride);
+        ws->tooltip.cr = cairo_create(ws->tooltip.cairo_surface);
+
+        cairo_t *cr = ws->tooltip.cr;
+        cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+        cairo_paint(cr);
+        cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+        draw_rounded_rect(cr, 0, 0, ws->tooltip.width, ws->tooltip.height, 6);
+        cairo_set_source_rgba(cr, 0.10, 0.10, 0.18, 0.96);
+        cairo_fill(cr);
+
+        PangoLayout *lay = pango_cairo_create_layout(cr);
+        PangoFontDescription *fdesc = pango_font_description_from_string("Sans 10");
+        pango_layout_set_font_description(lay, fdesc);
+        pango_font_description_free(fdesc);
+        pango_layout_set_text(lay, ws->tooltip.text, -1);
+        cairo_set_source_rgb(cr, 1, 1, 1);
+        cairo_move_to(cr, 6, 6);
+        pango_cairo_show_layout(cr, lay);
+        g_object_unref(lay);
+
+        cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.3);
+        cairo_set_line_width(cr, 1);
+        draw_rounded_rect(cr, 0, 0, ws->tooltip.width, ws->tooltip.height, 6);
+        cairo_stroke(cr);
+
+        cairo_surface_flush(ws->tooltip.cairo_surface);
+    }
+    ws->tooltip.configured = true;
+    if (ws->tooltip.buffer && ws->tooltip.surface) {
+        wl_surface_attach(ws->tooltip.surface, ws->tooltip.buffer, 0, 0);
+        wl_surface_damage_buffer(ws->tooltip.surface, 0, 0, ws->tooltip.width, ws->tooltip.height);
+        wl_surface_commit(ws->tooltip.surface);
+    }
+}
+
+static void tooltip_layer_surface_closed(void *data,
+    struct zwlr_layer_surface_v1 *surface)
+{
+    ((struct wl_status *)data)->tooltip.visible = false;
+}
+
+static const struct zwlr_layer_surface_v1_listener tooltip_layer_surface_listener = {
+    .configure = tooltip_layer_surface_configure,
+    .closed = tooltip_layer_surface_closed,
+};
+
+static void tooltip_show(struct wl_status *ws, const char *text, int hover_x, int hover_y)
+{
+    if (ws->tooltip.visible && strcmp(ws->tooltip.text, text) == 0)
+        return;
+
+    tooltip_destroy(ws);
+
+    memset(&ws->tooltip, 0, sizeof(ws->tooltip));
+    ws->tooltip.hover_x = hover_x;
+    ws->tooltip.hover_y = hover_y;
+    ws->tooltip.hovered_clickable = 0;
+    strncpy(ws->tooltip.text, text, sizeof(ws->tooltip.text) - 1);
+
+    int nlines = 1;
+    for (const char *p = text; *p; p++)
+        if (*p == '\n') nlines++;
+    ws->tooltip.width = 280;
+    ws->tooltip.height = nlines * 16 + 14;
+
+    ws->tooltip.surface = wl_compositor_create_surface(ws->compositor);
+    ws->tooltip.layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+        ws->layer_shell, ws->tooltip.surface, NULL,
+        ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "wlstatus-tooltip");
+
+    zwlr_layer_surface_v1_add_listener(ws->tooltip.layer_surface,
+        &tooltip_layer_surface_listener, ws);
+
+    zwlr_layer_surface_v1_set_size(ws->tooltip.layer_surface, ws->tooltip.width, ws->tooltip.height);
+    zwlr_layer_surface_v1_set_anchor(ws->tooltip.layer_surface,
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+
+    const char *anchor_str = config_get(ws->cfg, "bar_anchor", "top");
+    int bar_on_bottom = (strcmp(anchor_str, "bottom") == 0);
+    if (bar_on_bottom)
+        zwlr_layer_surface_v1_set_margin(ws->tooltip.layer_surface,
+            hover_y - ws->tooltip.height - 4, BAR_PADDING, 0, 0);
+    else
+        zwlr_layer_surface_v1_set_margin(ws->tooltip.layer_surface,
+            ws->height + 4, BAR_PADDING, 0, 0);
+
+    zwlr_layer_surface_v1_set_exclusive_zone(ws->tooltip.layer_surface, 0);
+    ws->tooltip.visible = true;
+    wl_surface_commit(ws->tooltip.surface);
+}
+
+static volatile sig_atomic_t reload_requested;
+
+static void handle_sighup(int sig)
+{
+    (void)sig;
+    reload_requested = 1;
+}
+
+static const char *config_path(void);
+
+static void reload(struct wl_status *ws)
+{
+    if (ws->popup.visible) popup_destroy(ws);
+    if (ws->tooltip.visible) tooltip_destroy(ws);
+    destroy_buffer(ws);
+    if (ws->bar) bar_destroy(ws->bar);
+    config_destroy(ws->cfg);
+    ws->cfg = config_load(config_path());
+    ws->bar = bar_create(ws->width, ws->height, ws->cfg);
+    create_buffer(ws);
+    bar_update_workspaces(ws->bar);
+    bar_update_system_info(ws->bar);
+    bar_update_updates(ws->bar);
+    bar_update_disk(ws->bar);
+    bar_update_volume(ws->bar);
+    bar_update_network(ws->bar);
+    bar_update_battery(ws->bar);
+    bar_update_custom_modules(ws->bar);
+    render(ws);
 }
 
 static void on_timer(struct wl_status *ws)
@@ -311,6 +514,10 @@ static void on_timer(struct wl_status *ws)
     bar_update_system_info(ws->bar);
     bar_update_updates(ws->bar);
     bar_update_disk(ws->bar);
+    bar_update_volume(ws->bar);
+    bar_update_network(ws->bar);
+    bar_update_battery(ws->bar);
+    bar_update_custom_modules(ws->bar);
     render(ws);
 }
 
@@ -341,6 +548,10 @@ static void layer_surface_configure(void *data,
     bar_update_system_info(ws->bar);
     bar_update_updates(ws->bar);
     bar_update_disk(ws->bar);
+    bar_update_volume(ws->bar);
+    bar_update_network(ws->bar);
+    bar_update_battery(ws->bar);
+    bar_update_custom_modules(ws->bar);
     render(ws);
 }
 
@@ -369,6 +580,28 @@ static void pointer_enter(void *data, struct wl_pointer *pointer,
 
     bar_update_hover(ws->bar, ws->pointer_x, ws->pointer_y);
     render(ws);
+
+    for (int i = 0; i < ws->bar->n_clickables; i++) {
+        struct clickable *c = &ws->bar->clickables[i];
+        if (c->tooltip_cmd[0] &&
+            ws->pointer_x >= c->x && ws->pointer_x < c->x + c->w &&
+            ws->pointer_y >= c->y && ws->pointer_y < c->y + c->h) {
+            FILE *fp = popen(c->tooltip_cmd, "r");
+            if (fp) {
+                char buf[512] = {0};
+                size_t total = 0;
+                char line[256];
+                while (fgets(line, sizeof(line), fp) && total < sizeof(buf) - 1) {
+                    int len = snprintf(buf + total, sizeof(buf) - total, "%s", line);
+                    if (len > 0) total += len;
+                }
+                pclose(fp);
+                ws->tooltip.hovered_clickable = i;
+                tooltip_show(ws, buf, ws->pointer_x, ws->pointer_y);
+            }
+            break;
+        }
+    }
 }
 
 static void pointer_leave(void *data, struct wl_pointer *pointer,
@@ -387,6 +620,8 @@ static void pointer_leave(void *data, struct wl_pointer *pointer,
 
     bar_clear_hover(ws->bar);
     render(ws);
+    if (ws->tooltip.visible)
+        tooltip_destroy(ws);
 }
 
 static void pointer_motion(void *data, struct wl_pointer *pointer,
@@ -418,6 +653,35 @@ static void pointer_motion(void *data, struct wl_pointer *pointer,
     if (old_power != ws->bar->power_hovered ||
         old_ws != ws->bar->hovered_workspace)
         render(ws);
+
+    int found_tooltip = -1;
+    for (int i = 0; i < ws->bar->n_clickables; i++) {
+        struct clickable *c = &ws->bar->clickables[i];
+        if (c->tooltip_cmd[0] &&
+            x >= c->x && x < c->x + c->w &&
+            y >= c->y && y < c->y + c->h) {
+            found_tooltip = i;
+            break;
+        }
+    }
+    if (found_tooltip >= 0 && found_tooltip != ws->tooltip.hovered_clickable) {
+        FILE *fp = popen(ws->bar->clickables[found_tooltip].tooltip_cmd, "r");
+        if (fp) {
+            char buf[512] = {0};
+            size_t total = 0;
+            char line[256];
+            while (fgets(line, sizeof(line), fp) && total < sizeof(buf) - 1) {
+                int len = snprintf(buf + total, sizeof(buf) - total, "%s", line);
+                if (len > 0) total += len;
+            }
+            pclose(fp);
+            ws->tooltip.hovered_clickable = found_tooltip;
+            tooltip_show(ws, buf, x, y);
+        }
+    } else if (found_tooltip < 0) {
+        if (ws->tooltip.visible)
+            tooltip_destroy(ws);
+    }
 }
 
 static void execute_command(const char *cmd)
@@ -466,10 +730,10 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
         return;
     }
 
-    if (action == CLICK_HYPRCTL) {
+    if (action == CLICK_HYPRCTL || action == CLICK_RUN) {
         for (int i = 0; i < ws->bar->n_clickables; i++) {
             struct clickable *c = &ws->bar->clickables[i];
-            if (c->action == CLICK_HYPRCTL &&
+            if (c->action == action &&
                 ws->pointer_x >= c->x && ws->pointer_x < c->x + c->w &&
                 ws->pointer_y >= c->y && ws->pointer_y < c->y + c->h) {
                 execute_command(c->command);
@@ -557,10 +821,14 @@ static int setup_layer_surface(struct wl_status *ws)
 
     int bh = config_get_int(ws->cfg, "bar_height", BAR_HEIGHT);
     zwlr_layer_surface_v1_set_size(ws->layer_surface, 0, bh);
-    zwlr_layer_surface_v1_set_anchor(ws->layer_surface,
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+
+    uint32_t anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
+    const char *anchor_str = config_get(ws->cfg, "bar_anchor", "top");
+    if (strcmp(anchor_str, "bottom") == 0)
+        anchor |= ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
+    else
+        anchor |= ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
+    zwlr_layer_surface_v1_set_anchor(ws->layer_surface, anchor);
     zwlr_layer_surface_v1_set_exclusive_zone(ws->layer_surface, bh);
 
     wl_surface_commit(ws->surface);
@@ -618,20 +886,47 @@ int main(int argc, char *argv[])
         timerfd_settime(ws.timer_fd, 0, &ts, NULL);
     }
 
+    struct sigaction sa = { .sa_handler = handle_sighup };
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGHUP, &sa, NULL);
+
+    ws.inotify_fd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
+    if (ws.inotify_fd >= 0) {
+        const char *cfg_path = config_path();
+        if (cfg_path) {
+            char cfg_dir[512];
+            snprintf(cfg_dir, sizeof(cfg_dir), "%s", cfg_path);
+            char *slash = strrchr(cfg_dir, '/');
+            if (slash) {
+                *slash = '\0';
+                inotify_add_watch(ws.inotify_fd, cfg_dir,
+                    IN_CLOSE_WRITE | IN_MOVED_TO);
+            }
+        }
+    }
+
     while (ws.running) {
-        struct pollfd fds[2] = {
+        struct pollfd fds[3] = {
             { .fd = wl_display_get_fd(ws.display), .events = POLLIN },
             { .fd = ws.timer_fd, .events = POLLIN },
+            { .fd = ws.inotify_fd, .events = POLLIN },
         };
-        int nfds = ws.timer_fd >= 0 ? 2 : 1;
+        int nfds = 1;
+        if (ws.timer_fd >= 0) nfds = 2;
+        if (ws.inotify_fd >= 0) nfds = 3;
         int has_display_data = 0;
 
         while (wl_display_prepare_read(ws.display) != 0)
             wl_display_dispatch_pending(ws.display);
         wl_display_flush(ws.display);
 
-        if (poll(fds, nfds, -1) < 0)
+        if (poll(fds, nfds, -1) < 0) {
+            if (errno == EINTR) {
+                wl_display_cancel_read(ws.display);
+                goto check_reload;
+            }
             break;
+        }
 
         if (fds[0].revents & POLLIN) {
             wl_display_read_events(ws.display);
@@ -648,10 +943,33 @@ int main(int argc, char *argv[])
             read(ws.timer_fd, &exp, sizeof(exp));
             on_timer(&ws);
         }
+
+        if (ws.inotify_fd >= 0 && (fds[2].revents & POLLIN)) {
+            char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+            ssize_t len = read(ws.inotify_fd, buf, sizeof(buf));
+            if (len > 0) {
+                const struct inotify_event *ev;
+                for (char *p = buf; p < buf + len; p += sizeof(struct inotify_event) + ev->len) {
+                    ev = (const struct inotify_event *)p;
+                    if (ev->len > 0 && strcmp(ev->name, "config") == 0) {
+                        reload(&ws);
+                        break;
+                    }
+                }
+            }
+        }
+
+check_reload:
+        if (reload_requested) {
+            reload_requested = 0;
+            reload(&ws);
+        }
     }
 
     if (ws.timer_fd >= 0) close(ws.timer_fd);
+    if (ws.inotify_fd >= 0) close(ws.inotify_fd);
     popup_destroy(&ws);
+    tooltip_destroy(&ws);
     destroy_buffer(&ws);
     if (ws.pointer) wl_pointer_destroy(ws.pointer);
     if (ws.seat) wl_seat_destroy(ws.seat);

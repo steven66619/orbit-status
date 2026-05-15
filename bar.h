@@ -9,6 +9,7 @@
 #define BAR_HEIGHT 38
 #define BAR_PADDING 8
 #define MAX_WORKSPACES 10
+#define MAX_CUSTOM_MODULES 4
 
 enum click_action {
     CLICK_NONE,
@@ -16,12 +17,14 @@ enum click_action {
     CLICK_REBOOT,
     CLICK_SUSPEND,
     CLICK_HYPRCTL,
+    CLICK_RUN,
 };
 
 struct clickable {
     int x, y, w, h;
     enum click_action action;
     char command[256];
+    char tooltip_cmd[128];
 };
 
 struct workspace {
@@ -29,11 +32,16 @@ struct workspace {
     bool active;
 };
 
+struct custom_module {
+    char output[64];
+    time_t last_check;
+};
+
 struct bar {
     int width, height;
     struct config *cfg;
     int n_clickables;
-    struct clickable clickables[16];
+    struct clickable clickables[32];
     cairo_surface_t *icons[8];
     int n_icons;
     int power_hovered;
@@ -51,6 +59,17 @@ struct bar {
 
     int disk_percent;
     time_t disk_last_check;
+
+    int volume_percent;
+    bool volume_muted;
+
+    char network_ssid[64];
+
+    int battery_percent;
+    bool battery_charging;
+    bool battery_present;
+
+    struct custom_module custom_modules[MAX_CUSTOM_MODULES];
 };
 
 struct bar *bar_create(int width, int height, struct config *cfg);
@@ -65,5 +84,9 @@ void bar_update_workspaces(struct bar *bar);
 void bar_update_system_info(struct bar *bar);
 void bar_update_updates(struct bar *bar);
 void bar_update_disk(struct bar *bar);
+void bar_update_volume(struct bar *bar);
+void bar_update_network(struct bar *bar);
+void bar_update_battery(struct bar *bar);
+void bar_update_custom_modules(struct bar *bar);
 
 #endif
