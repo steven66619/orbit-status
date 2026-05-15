@@ -47,6 +47,7 @@ clean:
 
 install: wlstatus
 	install -Dm755 wlstatus $(DESTDIR)$(PREFIX)/bin/wlstatus
+	install -Dm755 scripts/bar-update $(DESTDIR)$(PREFIX)/bin/wlstatus-update
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/wlstatus

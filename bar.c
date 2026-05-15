@@ -33,6 +33,8 @@ struct bar *bar_create(int width, int height, struct config *cfg)
     bar->mem_percent = 0;
     bar->updates_count = 0;
     bar->updates_last_check = 0;
+    bar->updates_last_sync = 0;
+    bar->updates_auto_notified = false;
     bar->disk_percent = 0;
     bar->disk_last_check = 0;
 
@@ -693,6 +695,16 @@ void bar_update_updates(struct bar *bar)
     if (now - bar->updates_last_check < interval) return;
     bar->updates_last_check = now;
 
+    /* Periodically sync remote DB so repo changes are detected */
+    if (access("/usr/bin/pacman", X_OK) == 0 && now - bar->updates_last_sync > 3600) {
+        bar->updates_last_sync = now;
+        if (fork() == 0) {
+            execl("/bin/sh", "sh", "-c",
+                "sudo pacman -Sy --noconfirm 2>/dev/null", (char *)NULL);
+            _exit(1);
+        }
+    }
+
     const char *custom_cmd = config_get(bar->cfg, "update_cmd", "");
     if (custom_cmd[0]) {
         char buf[256];
@@ -708,18 +720,31 @@ void bar_update_updates(struct bar *bar)
     }
 
     FILE *fp = NULL;
-    if (access("/usr/bin/apt-get", X_OK) == 0)
-        fp = popen("apt list --upgradable 2>/dev/null | grep -c upgradable", "r");
-    else if (access("/usr/bin/pacman", X_OK) == 0)
+    if (access("/usr/bin/pacman", X_OK) == 0)
         fp = popen("pacman -Qu 2>/dev/null | wc -l", "r");
     else if (access("/usr/bin/dnf", X_OK) == 0)
         fp = popen("dnf check-update -q 2>/dev/null | wc -l", "r");
+    else if (access("/usr/bin/apt-get", X_OK) == 0)
+        fp = popen("apt list --upgradable 2>/dev/null | grep -c upgradable", "r");
 
     if (fp) {
         char line[32];
         if (fgets(line, sizeof(line), fp))
             bar->updates_count = atoi(line);
         pclose(fp);
+    }
+
+    if (bar->updates_count == 0) {
+        bar->updates_auto_notified = false;
+    } else if (config_get_int(bar->cfg, "auto_update", 0) && !bar->updates_auto_notified) {
+        bar->updates_auto_notified = true;
+        const char *cmd = config_get(bar->cfg, "auto_update_cmd", "");
+        if (!cmd[0]) cmd = "wlstatus-update";
+        if (fork() == 0) {
+            setsid();
+            execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+            _exit(1);
+        }
     }
 }
 

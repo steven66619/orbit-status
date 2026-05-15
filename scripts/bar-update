@@ -1,0 +1,36 @@
+#!/bin/sh
+mode="${1:-full}"
+term=
+for t in "${TERMINAL:-}" foot kitty alacritty xterm; do
+    [ -n "$t" ] && command -v "$t" >/dev/null 2>&1 && term="$t" && break
+done
+[ -z "$term" ] && term=foot
+
+if [ "$mode" = "auto" ]; then
+    if command -v pacman >/dev/null 2>&1; then
+        pkgs=
+        for p in wlstatus wlstatus-personal; do
+            pacman -Si "$p" >/dev/null 2>&1 && pkgs="$pkgs $p"
+        done
+        [ -n "$pkgs" ] || exit 0
+        exec sudo pacman -Sy $pkgs --noconfirm 2>&1
+    elif command -v dnf >/dev/null 2>&1; then
+        exec sudo dnf upgrade --refresh wlstatus-personal -y 2>&1
+    elif command -v apt-get >/dev/null 2>&1; then
+        exec sudo apt-get update -y 2>&1 && sudo apt-get install --only-upgrade wlstatus-personal -y 2>&1
+    else
+        echo "no known package manager" >&2
+        exit 1
+    fi
+else
+    if command -v pacman >/dev/null 2>&1; then
+        exec $term sh -c 'sudo pacman -Syu $PACMAN_EXTRA 2>&1; echo; echo "Press Enter to close"; read _'
+    elif command -v dnf >/dev/null 2>&1; then
+        exec $term sh -c 'sudo dnf upgrade --refresh 2>&1; echo; echo "Press Enter to close"; read _'
+    elif command -v apt-get >/dev/null 2>&1; then
+        exec $term sh -c 'sudo apt-get update && sudo apt-get upgrade 2>&1; echo; echo "Press Enter to close"; read _'
+    else
+        echo "no known package manager" >&2
+        exit 1
+    fi
+fi

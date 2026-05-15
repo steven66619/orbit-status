@@ -56,6 +56,8 @@ struct bar {
     int mem_percent;
     int updates_count;
     time_t updates_last_check;
+    time_t updates_last_sync;
+    bool updates_auto_notified;
 
     int disk_percent;
     time_t disk_last_check;

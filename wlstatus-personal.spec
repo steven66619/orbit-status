@@ -2,7 +2,7 @@
 
 Name: wlstatus-personal
 Version: 1.0
-Release: 1%{?dist}
+Release: 3%{?dist}
 Summary: wlstatus + personal dotfiles (shell, hyprland, waybar, kitty, fish)
 
 License: MIT
@@ -32,6 +32,7 @@ make PREFIX=/usr
 make install PREFIX=/usr DESTDIR=%{buildroot}
 
 install -Dm755 wlstatus-personal-setup %{buildroot}%{_bindir}/wlstatus-personal-setup
+install -Dm755 scripts/bar-update %{buildroot}%{_bindir}/wlstatus-update
 
 for f in dotfiles/home/*; do
   install -Dm644 "$f" %{buildroot}%{_datadir}/wlstatus-personal/home/$(basename "$f")
@@ -46,6 +47,7 @@ done
 %files
 %{_bindir}/wlstatus
 %{_bindir}/wlstatus-personal-setup
+%{_bindir}/wlstatus-update
 %{_datadir}/wlstatus-personal/
 
 %changelog
