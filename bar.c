@@ -123,12 +123,12 @@ static void draw_power_btn_icon(cairo_t *cr, int x, int y, int size, int type, b
         cairo_line_to(cr, ax - 3, ay + 3);
         cairo_stroke(cr);
     } else if (type == 2) {
-        double bw = 2.5;
-        double bh = r * 1.3;
-        double gap = 3;
-        cairo_rectangle(cr, cx - gap / 2 - bw, cy - bh / 2, bw, bh);
-        cairo_rectangle(cr, cx + gap / 2, cy - bh / 2, bw, bh);
+        double mr = r * 0.75;
+        cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
+        cairo_arc(cr, cx, cy, mr, 0, 2 * M_PI);
+        cairo_arc(cr, cx - mr * 0.35, cy, mr * 0.7, 0, 2 * M_PI);
         cairo_fill(cr);
+        cairo_set_fill_rule(cr, CAIRO_FILL_RULE_WINDING);
     }
 }
 
