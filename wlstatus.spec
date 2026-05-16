@@ -2,7 +2,7 @@
 
 Name: wlstatus
 Version: 1.0
-Release: 1%{?dist}
+Release: 2%{?dist}
 Summary: Lightweight Wayland status bar for wlr-layer-shell compositors
 
 License: MIT
@@ -32,7 +32,11 @@ make install PREFIX=/usr DESTDIR=%{buildroot}
 
 %files
 %{_bindir}/wlstatus
+%{_bindir}/wlstatus-update
 
 %changelog
+* Sat May 16 2026 steven66619 <ste@example.com> - 1.0-2
+- Remove application launcher
+
 * Thu May 14 2026 steven66619 <ste@example.com> - 1.0-1
 - Initial package

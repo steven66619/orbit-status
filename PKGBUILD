@@ -1,7 +1,7 @@
 # Maintainer: steven66619 <ste@example.com>
 pkgname=wlstatus
 pkgver=1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Lightweight Wayland status bar for wlr-layer-shell compositors"
 arch=('x86_64' 'aarch64')
 url="https://github.com/steven66619/wlstatus"

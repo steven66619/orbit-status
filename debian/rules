@@ -14,7 +14,7 @@ install: build
 binary-arch: install
 	mkdir -p $(CURDIR)/debian/wlstatus/DEBIAN
 	awk '/^Package:/ {p=1} p' debian/control > $(CURDIR)/debian/wlstatus/DEBIAN/control
-	echo "Version: 1.0-1" >> $(CURDIR)/debian/wlstatus/DEBIAN/control
+	echo "Version: 1.0-2" >> $(CURDIR)/debian/wlstatus/DEBIAN/control
 	dpkg-deb --root-owner-group --build $(CURDIR)/debian/wlstatus $(CURDIR)/..
 
 binary: binary-arch
