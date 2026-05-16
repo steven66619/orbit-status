@@ -4,10 +4,10 @@
 
 ```bash
 # Import GPG key
-curl -fsSL https://steven66619.github.io/wlstatus/GPG-KEY | sudo gpg --dearmor -o /usr/share/keyrings/wlstatus.gpg
+curl -fsSL https://steven66619.github.io/wlstatus-new/GPG-KEY | sudo gpg --dearmor -o /usr/share/keyrings/wlstatus.gpg
 
 # Add repository
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/wlstatus.gpg] https://steven66619.github.io/wlstatus/apt stable main" | sudo tee /etc/apt/sources.list.d/wlstatus.list
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/wlstatus.gpg] https://steven66619.github.io/wlstatus-new/apt stable main" | sudo tee /etc/apt/sources.list.d/wlstatus.list
 
 # Install
 sudo apt update
@@ -16,7 +16,7 @@ sudo apt install wlstatus
 
 Without GPG verification (not recommended):
 ```bash
-echo "deb [trusted=yes] https://steven66619.github.io/wlstatus/apt stable main" | sudo tee /etc/apt/sources.list.d/wlstatus.list
+echo "deb [trusted=yes] https://steven66619.github.io/wlstatus-new/apt stable main" | sudo tee /etc/apt/sources.list.d/wlstatus.list
 sudo apt update && sudo apt install wlstatus
 ```
 
@@ -24,7 +24,7 @@ sudo apt update && sudo apt install wlstatus
 
 ```bash
 # Add repository
-sudo dnf config-manager --add-repo https://steven66619.github.io/wlstatus/yum/
+sudo dnf config-manager --add-repo https://steven66619.github.io/wlstatus-new/yum/
 
 # Install
 sudo dnf install wlstatus
@@ -33,7 +33,7 @@ sudo dnf install wlstatus
 Or manually:
 ```bash
 sudo curl -L -o /etc/yum.repos.d/wlstatus.repo \
-  https://steven66619.github.io/wlstatus/yum/wlstatus.repo
+  https://steven66619.github.io/wlstatus-new/yum/wlstatus.repo
 sudo dnf install wlstatus
 ```
 
@@ -44,7 +44,7 @@ Add to `/etc/pacman.conf`:
 ```ini
 [wlstatus]
 SigLevel = Optional TrustAll
-Server = https://steven66619.github.io/wlstatus/arch/x86_64
+Server = https://steven66619.github.io/wlstatus-new/arch/x86_64
 ```
 
 Then install:
@@ -53,8 +53,8 @@ Then install:
 sudo pacman -Sy wlstatus
 ```
 
-Or download the `.pkg.tar.zst` directly from the [Releases page](https://github.com/steven66619/wlstatus/releases).
+Or download the `.pkg.tar.zst` directly from the [Releases page](https://github.com/steven66619/wlstatus-new/releases).
 
 ## Manual download
 
-Grab the latest `.deb`, `.rpm`, or `.pkg.tar.zst` from the [Releases page](https://github.com/steven66619/wlstatus/releases).
+Grab the latest `.deb`, `.rpm`, or `.pkg.tar.zst` from the [Releases page](https://github.com/steven66619/wlstatus-new/releases).

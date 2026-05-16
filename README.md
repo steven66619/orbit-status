@@ -1,6 +1,6 @@
 # wlstatus-personal
 
-Personal variant of [wlstatus](https://github.com/steven66619/wlstatus) — a lightweight Wayland status bar.
+Personal variant of [wlstatus](https://github.com/steven66619/wlstatus-new) — a lightweight Wayland status bar.
 
 ## Features
 
@@ -16,20 +16,20 @@ Personal variant of [wlstatus](https://github.com/steven66619/wlstatus) — a li
 
 ## Package Repositories
 
-Packages are hosted at `https://steven66619.github.io/wlstatus/`.
+Packages are hosted at `https://steven66619.github.io/wlstatus-new/`.
 
 ### DNF (Fedora / RHEL)
 
 ```bash
-sudo dnf config-manager addrepo --from-repofile=https://steven66619.github.io/wlstatus/wlstatus-personal.repo
+sudo dnf config-manager addrepo --from-repofile=https://steven66619.github.io/wlstatus-new/wlstatus-personal.repo
 sudo dnf install wlstatus-personal
 ```
 
 ### APT (Debian / Ubuntu)
 
 ```bash
-curl -fsSL https://steven66619.github.io/wlstatus/GPG-KEY | sudo gpg --dearmor -o /usr/share/keyrings/wlstatus.gpg
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/wlstatus.gpg] https://steven66619.github.io/wlstatus/apt stable main" | sudo tee /etc/apt/sources.list.d/wlstatus.list
+curl -fsSL https://steven66619.github.io/wlstatus-new/GPG-KEY | sudo gpg --dearmor -o /usr/share/keyrings/wlstatus.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/wlstatus.gpg] https://steven66619.github.io/wlstatus-new/apt stable main" | sudo tee /etc/apt/sources.list.d/wlstatus.list
 sudo apt update && sudo apt install wlstatus-personal
 ```
 
@@ -40,7 +40,7 @@ Add to `/etc/pacman.conf`:
 ```ini
 [wlstatus-personal]
 SigLevel = Optional TrustAll
-Server = https://steven66619.github.io/wlstatus/arch/x86_64
+Server = https://steven66619.github.io/wlstatus-new/arch/x86_64
 ```
 
 ```bash

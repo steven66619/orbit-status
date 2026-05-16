@@ -1,6 +1,6 @@
 [wlstatus]
 name=wlstatus
-baseurl=https://steven66619.github.io/wlstatus/yum/$basearch
+baseurl=https://steven66619.github.io/wlstatus-new/yum/$basearch
 enabled=1
 gpgcheck=0
 repo_gpgcheck=0
