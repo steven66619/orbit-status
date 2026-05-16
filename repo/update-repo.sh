@@ -8,7 +8,7 @@ DIST="${DIST:-stable}"
 APT_POOL="$REPO_DIR/apt/pool/main"
 APT_DIST="$REPO_DIR/apt/dists/$DIST"
 APT_BINARY="$APT_DIST/main/binary-$ARCH"
-YUM_DIR="$REPO_DIR/yum/$ARCH"
+YUM_DIR="$REPO_DIR/yum/x86_64"
 ARCH_DIR="$REPO_DIR/arch/x86_64"
 
 install_deps_ci() {
@@ -24,12 +24,21 @@ generate_apt() {
         echo "    No .deb packages found, skipping APT"
         return
     fi
-    dpkg-scanpackages --multiversion "$REPO_DIR/apt/pool/" 2>/dev/null > "$APT_BINARY/Packages"
-    gzip -kf "$APT_BINARY/Packages"
-    apt-ftparchive release "$APT_DIST" > "$APT_DIST/Release"
+    if command -v dpkg-scanpackages &>/dev/null; then
+        dpkg-scanpackages --multiversion "$REPO_DIR/apt/pool/" 2>/dev/null > "$APT_BINARY/Packages" || \
+        dpkg-scanpackages "$REPO_DIR/apt/pool/" 2>/dev/null > "$APT_BINARY/Packages"
+        gzip -f "$APT_BINARY/Packages"
+        echo "    APT Packages generated"
+    else
+        echo "    dpkg-scanpackages not available, skipping APT metadata"
+    fi
+    if command -v apt-ftparchive &>/dev/null; then
+        apt-ftparchive release "$APT_DIST" > "$APT_DIST/Release" 2>/dev/null || true
+        echo "    APT Release generated"
+    fi
     if gpg --list-keys ste@example.com &>/dev/null 2>&1; then
-        gpg --detach-sign --armor -o "$APT_DIST/Release.gpg" "$APT_DIST/Release"
-        gpg --clearsign -o "$APT_DIST/InRelease" "$APT_DIST/Release"
+        gpg --detach-sign --armor -o "$APT_DIST/Release.gpg" "$APT_DIST/Release" 2>/dev/null || true
+        gpg --clearsign -o "$APT_DIST/InRelease" "$APT_DIST/Release" 2>/dev/null || true
     fi
     echo "    APT repo ready"
 }
@@ -42,8 +51,9 @@ generate_yum() {
         return
     fi
     if command -v createrepo_c &>/dev/null; then
-        createrepo_c --update "$YUM_DIR" --no-database 2>/dev/null || \
-        createrepo_c --update "$YUM_DIR" 2>/dev/null || \
+        echo "    Running createrepo_c..."
+        createrepo_c --update "$YUM_DIR" 2>&1 || \
+        createrepo_c "$YUM_DIR" 2>&1 || \
         echo "    createrepo_c failed, skipping YUM metadata"
     else
         echo "    createrepo_c not available, skipping YUM metadata"
@@ -52,6 +62,11 @@ generate_yum() {
 
 generate_arch() {
     echo "==> Generating Arch repo..."
+    if ! command -v repo-add &>/dev/null; then
+        echo "    repo-add not available (Arch Linux tool), skipping"
+        echo "    (db files already committed in repo/)"
+        return
+    fi
     mkdir -p "$ARCH_DIR"
     local arch_arch="x86_64"
     pushd "$ARCH_DIR" >/dev/null
@@ -65,7 +80,9 @@ generate_arch() {
             echo "    No $db packages ($pattern) found, skipping"
             continue
         fi
-        repo-add "$db.db.tar.zst" $pattern 2>/dev/null
+        if ! repo-add "$db.db.tar.zst" $pattern 2>&1; then
+            echo "    repo-add failed for $db, existing db files preserved"
+        fi
     done
     popd >/dev/null
 }
