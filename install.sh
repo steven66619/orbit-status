@@ -58,29 +58,9 @@ echo "==> Installing to $BINARY"
 install -Dm755 wlstatus "$BINARY"
 
 if [ ! -f "$CONFIG_DIR/config" ]; then
-    echo "==> Creating example config at $CONFIG_DIR/config"
+    echo "==> Copying example config to $CONFIG_DIR/config"
     mkdir -p "$CONFIG_DIR"
-    cat > "$CONFIG_DIR/config" <<'CONFIG'
-# wlstatus config
-bar_height = 38
-bar_padding = 8
-
-poweroff_color = 1.0 0.2 0.3
-reboot_color = 1.0 0.6 0.0
-suspend_color = 0.6 0.2 1.0
-
-icon_size = 24
-glow_width = 8
-glow_alpha_percent = 25
-icon_alpha_percent = 90
-icon_hover_alpha_percent = 100
-
-show_hyperion = 1
-show_hyperion_logo = 1
-hyperion_color = 0.92 0.72 0.0
-
-accent_color = 0.0 0.90 1.0
-CONFIG
+    cp "$(dirname "$0")/wlstatus.conf.example" "$CONFIG_DIR/config"
 else
     echo "==> Config exists at $CONFIG_DIR/config, skipping"
 fi
