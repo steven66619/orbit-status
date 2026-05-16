@@ -338,7 +338,40 @@ void bar_render(struct bar *bar, cairo_t *cr)
 
     draw_background(cr, bar->width, bar->height, bar->cfg);
 
-    int ws_start = 48;
+    int launcher_x = BAR_PADDING;
+    if (config_get_int(bar->cfg, "show_applauncher", 0)) {
+        int lh = 22;
+        int ly = (bar->height - lh) / 2;
+        draw_rounded_rect(cr, launcher_x, ly, 36, lh, lh / 2);
+        float acc[4];
+        float def_acc[] = {0.0f, 0.90f, 1.0f, 1.0f};
+        config_get_color(bar->cfg, "accent_color", acc, def_acc);
+        cairo_set_source_rgba(cr, acc[0], acc[1], acc[2], 0.25);
+        cairo_fill(cr);
+
+        cairo_set_source_rgba(cr, acc[0], acc[1], acc[2], 0.8);
+        cairo_set_line_width(cr, 1.5);
+        draw_rounded_rect(cr, launcher_x, ly, 36, lh, lh / 2);
+        cairo_stroke(cr);
+
+        cairo_set_source_rgba(cr, acc[0], acc[1], acc[2], 0.9);
+        cairo_arc(cr, launcher_x + 12, ly + lh / 2, 4, 0, 2 * M_PI);
+        cairo_fill(cr);
+        cairo_arc(cr, launcher_x + 22, ly + lh / 2, 4, 0, 2 * M_PI);
+        cairo_fill(cr);
+        cairo_arc(cr, launcher_x + 32, ly + lh / 2, 4, 0, 2 * M_PI);
+        cairo_fill(cr);
+
+        if (bar->n_clickables < 32) {
+            bar->clickables[bar->n_clickables++] = (struct clickable){
+                .x = launcher_x, .y = ly, .w = 36, .h = lh,
+                .action = CLICK_LAUNCHER,
+            };
+        }
+        launcher_x += 36 + 8;
+    }
+
+    int ws_start = launcher_x;
     draw_workspaces(bar, cr, bar->height, ws_start);
 
     if (config_get_int(bar->cfg, "show_power", 1))
@@ -832,26 +865,40 @@ void bar_update_network(struct bar *bar)
         if (bar->network_ssid[0]) return;
     }
 
-    fp = popen("iw dev 2>/dev/null | awk '/Interface/{print $2}'", "r");
-    if (fp) {
-        char iface[32];
-        while (fgets(iface, sizeof(iface), fp)) {
-            char *nl = strchr(iface, '\n');
-            if (nl) *nl = '\0';
-            if (!iface[0]) continue;
-            char cmd[128];
-            snprintf(cmd, sizeof(cmd), "iw dev %s link 2>/dev/null | awk '/SSID/{print $2}'", iface);
-            FILE *f2 = popen(cmd, "r");
-            if (f2) {
-                if (fgets(bar->network_ssid, sizeof(bar->network_ssid), f2)) {
-                    char *nl2 = strchr(bar->network_ssid, '\n');
-                    if (nl2) *nl2 = '\0';
-                }
-                pclose(f2);
-                if (bar->network_ssid[0]) break;
+    const char *cfg_iface = config_get(bar->cfg, "network_iface", "");
+    if (cfg_iface[0]) {
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "iw dev %s link 2>/dev/null | awk '/SSID/{print $2}'", cfg_iface);
+        FILE *f2 = popen(cmd, "r");
+        if (f2) {
+            if (fgets(bar->network_ssid, sizeof(bar->network_ssid), f2)) {
+                char *nl2 = strchr(bar->network_ssid, '\n');
+                if (nl2) *nl2 = '\0';
             }
+            pclose(f2);
         }
-        pclose(fp);
+    } else {
+        fp = popen("iw dev 2>/dev/null | awk '/Interface/{print $2}'", "r");
+        if (fp) {
+            char iface[32];
+            while (fgets(iface, sizeof(iface), fp)) {
+                char *nl = strchr(iface, '\n');
+                if (nl) *nl = '\0';
+                if (!iface[0]) continue;
+                char cmd[128];
+                snprintf(cmd, sizeof(cmd), "iw dev %s link 2>/dev/null | awk '/SSID/{print $2}'", iface);
+                FILE *f2 = popen(cmd, "r");
+                if (f2) {
+                    if (fgets(bar->network_ssid, sizeof(bar->network_ssid), f2)) {
+                        char *nl2 = strchr(bar->network_ssid, '\n');
+                        if (nl2) *nl2 = '\0';
+                    }
+                    pclose(f2);
+                    if (bar->network_ssid[0]) break;
+                }
+            }
+            pclose(fp);
+        }
     }
 }
 

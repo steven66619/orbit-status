@@ -18,6 +18,7 @@ enum click_action {
     CLICK_SUSPEND,
     CLICK_HYPRCTL,
     CLICK_RUN,
+    CLICK_LAUNCHER,
 };
 
 struct clickable {

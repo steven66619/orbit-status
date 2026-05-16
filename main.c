@@ -47,7 +47,24 @@ struct wl_status {
 
     int timer_fd;
 
-    int inotify_fd;
+        int inotify_fd;
+
+    struct {
+        struct wl_surface *surface;
+        struct zwlr_layer_surface_v1 *layer_surface;
+        struct wl_buffer *buffer;
+        cairo_surface_t *cairo_surface;
+        cairo_t *cr;
+        void *shm_data;
+        int width, height;
+        bool visible, configured;
+        int n_entries;
+        struct { char name[64]; char exec[256]; } entries[64];
+        int hovered_idx;
+        int cols;
+        int entry_w, entry_h;
+        int grid_x, grid_y;
+    } launcher;
 
     struct {
         struct wl_surface *surface;
@@ -334,6 +351,266 @@ static void popup_create(struct wl_status *ws, int action)
     wl_surface_commit(ws->popup.surface);
 }
 
+static void launcher_populate_entries(struct wl_status *ws)
+{
+    ws->launcher.n_entries = 0;
+    FILE *fp = popen(
+        "for f in /usr/share/applications/*.desktop; do "
+        "  name=$(grep '^Name=' \"$f\" | head -1 | cut -d= -f2); "
+        "  exec=$(grep '^Exec=' \"$f\" | head -1 | cut -d= -f2 | sed 's/%.//g' | cut -d' ' -f1); "
+        "  [ -n \"$name\" ] && [ -n \"$exec\" ] && echo \"$name|$exec\"; "
+        "done | sort -f | head -48", "r");
+    if (!fp) return;
+    char line[384];
+    while (fgets(line, sizeof(line), fp) && ws->launcher.n_entries < 64) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+        char *sep = strchr(line, '|');
+        if (!sep) continue;
+        *sep = '\0';
+        sep++;
+        char *nl2 = strchr(sep, '\n');
+        if (nl2) *nl2 = '\0';
+        int i = ws->launcher.n_entries++;
+        line[sizeof(ws->launcher.entries[i].name) - 1] = '\0';
+        snprintf(ws->launcher.entries[i].name, sizeof(ws->launcher.entries[i].name), "%s", line);
+        sep[sizeof(ws->launcher.entries[i].exec) - 1] = '\0';
+        snprintf(ws->launcher.entries[i].exec, sizeof(ws->launcher.entries[i].exec), "%s", sep);
+    }
+    pclose(fp);
+}
+
+static void launcher_destroy_buffer(struct wl_status *ws)
+{
+    if (ws->launcher.cr) cairo_destroy(ws->launcher.cr);
+    ws->launcher.cr = NULL;
+    if (ws->launcher.cairo_surface) cairo_surface_destroy(ws->launcher.cairo_surface);
+    ws->launcher.cairo_surface = NULL;
+    if (ws->launcher.shm_data) {
+        int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->launcher.width);
+        munmap(ws->launcher.shm_data, stride * ws->launcher.height);
+    }
+    ws->launcher.shm_data = NULL;
+    if (ws->launcher.buffer) wl_buffer_destroy(ws->launcher.buffer);
+    ws->launcher.buffer = NULL;
+}
+
+static int launcher_create_buffer(struct wl_status *ws)
+{
+    if (ws->launcher.buffer) return 0;
+    int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->launcher.width);
+    int size = stride * ws->launcher.height;
+    int fd = create_shm_fd(size);
+    if (fd < 0) return -1;
+
+    struct wl_shm_pool *pool = wl_shm_create_pool(ws->shm, fd, size);
+    ws->launcher.buffer = wl_shm_pool_create_buffer(pool, 0,
+        ws->launcher.width, ws->launcher.height, stride, WL_SHM_FORMAT_ARGB8888);
+    wl_shm_pool_destroy(pool);
+
+    ws->launcher.shm_data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (ws->launcher.shm_data == MAP_FAILED) return -1;
+
+    ws->launcher.cairo_surface = cairo_image_surface_create_for_data(
+        ws->launcher.shm_data, CAIRO_FORMAT_ARGB32, ws->launcher.width, ws->launcher.height, stride);
+    ws->launcher.cr = cairo_create(ws->launcher.cairo_surface);
+    return 0;
+}
+
+static void launcher_render(struct wl_status *ws)
+{
+    cairo_t *cr = ws->launcher.cr;
+    int w = ws->launcher.width, h = ws->launcher.height;
+
+    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
+    draw_rounded_rect(cr, 0, 0, w, h, 10);
+    cairo_set_source_rgba(cr, 0.04, 0.02, 0.10, 0.97);
+    cairo_fill(cr);
+
+    float acc[4];
+    float def_acc[] = {0.0f, 0.90f, 1.0f, 1.0f};
+    config_get_color(ws->cfg, "accent_color", acc, def_acc);
+
+    cairo_set_source_rgba(cr, acc[0] * 0.5, acc[1] * 0.5, acc[2] * 0.5, 0.08);
+    cairo_set_line_width(cr, 1);
+    for (int y = 0; y < h; y += 8) {
+        cairo_move_to(cr, 0, y);
+        cairo_line_to(cr, w, y);
+    }
+    for (int x = 0; x < w; x += 8) {
+        cairo_move_to(cr, x, 0);
+        cairo_line_to(cr, x, h);
+    }
+    cairo_stroke(cr);
+
+    cairo_set_source_rgba(cr, acc[0], acc[1], acc[2], 0.4);
+    cairo_set_line_width(cr, 1.5);
+    draw_rounded_rect(cr, 0, 0, w, h, 10);
+    cairo_stroke(cr);
+
+    PangoFontDescription *fd_title = pango_font_description_from_string("Monospace Bold 11");
+    PangoLayout *lay_title = pango_cairo_create_layout(cr);
+    pango_layout_set_font_description(lay_title, fd_title);
+    pango_font_description_free(fd_title);
+    pango_layout_set_text(lay_title, "// LAUNCHER", -1);
+    int tw, th;
+    pango_layout_get_pixel_size(lay_title, &tw, &th);
+    cairo_set_source_rgba(cr, acc[0], acc[1], acc[2], 0.9);
+    cairo_move_to(cr, 14, 18);
+    pango_cairo_show_layout(cr, lay_title);
+    g_object_unref(lay_title);
+
+    int cols = ws->launcher.cols;
+    int ew = ws->launcher.entry_w;
+    int eh = ws->launcher.entry_h;
+    int gx = ws->launcher.grid_x;
+    int gy = ws->launcher.grid_y;
+
+    PangoFontDescription *fd_entry = pango_font_description_from_string("Sans 10");
+    for (int i = 0; i < ws->launcher.n_entries; i++) {
+        int row = i / cols;
+        int col = i % cols;
+        int ex = gx + col * (ew + 8);
+        int ey = gy + row * (eh + 6);
+
+        if (ex + ew > w || ey + eh > h) break;
+
+        bool hovered = (i == ws->launcher.hovered_idx);
+        double r = 6;
+
+        if (hovered) {
+            cairo_set_source_rgba(cr, acc[0], acc[1], acc[2], 0.15);
+            cairo_set_line_width(cr, 0);
+            draw_rounded_rect(cr, ex - 2, ey - 2, ew + 4, eh + 4, r + 1);
+            cairo_fill(cr);
+        }
+
+        cairo_set_source_rgba(cr, 0.12, 0.10, 0.22, 0.8);
+        draw_rounded_rect(cr, ex, ey, ew, eh, r);
+        cairo_fill(cr);
+
+        cairo_set_source_rgba(cr, acc[0], acc[1], acc[2], hovered ? 0.9 : 0.35);
+        cairo_set_line_width(cr, hovered ? 1.5 : 1);
+        draw_rounded_rect(cr, ex, ey, ew, eh, r);
+        cairo_stroke(cr);
+
+        PangoLayout *lay = pango_cairo_create_layout(cr);
+        pango_layout_set_font_description(lay, fd_entry);
+        pango_layout_set_width(lay, (ew - 12) * PANGO_SCALE);
+        pango_layout_set_ellipsize(lay, PANGO_ELLIPSIZE_END);
+        pango_layout_set_alignment(lay, PANGO_ALIGN_CENTER);
+        pango_layout_set_text(lay, ws->launcher.entries[i].name, -1);
+        int etw, eth;
+        pango_layout_get_pixel_size(lay, &etw, &eth);
+        cairo_set_source_rgb(cr, 0.9, 0.92, 1.0);
+        cairo_move_to(cr, ex + (ew - etw) / 2, ey + (eh - eth) / 2);
+        pango_cairo_show_layout(cr, lay);
+        g_object_unref(lay);
+    }
+    pango_font_description_free(fd_entry);
+
+    cairo_surface_flush(ws->launcher.cairo_surface);
+    wl_surface_attach(ws->launcher.surface, ws->launcher.buffer, 0, 0);
+    wl_surface_damage_buffer(ws->launcher.surface, 0, 0, w, h);
+    wl_surface_commit(ws->launcher.surface);
+}
+
+static void launcher_destroy(struct wl_status *ws)
+{
+    if (!ws->launcher.visible) return;
+    ws->launcher.visible = false;
+    launcher_destroy_buffer(ws);
+    if (ws->launcher.layer_surface) {
+        zwlr_layer_surface_v1_destroy(ws->launcher.layer_surface);
+        ws->launcher.layer_surface = NULL;
+    }
+    if (ws->launcher.surface) {
+        wl_surface_destroy(ws->launcher.surface);
+        ws->launcher.surface = NULL;
+    }
+    ws->launcher.configured = false;
+}
+
+static void launcher_layer_surface_configure(void *data,
+    struct zwlr_layer_surface_v1 *surface, uint32_t serial,
+    uint32_t width, uint32_t height)
+{
+    struct wl_status *ws = data;
+    zwlr_layer_surface_v1_ack_configure(surface, serial);
+    if (width > 0) ws->launcher.width = width;
+    if (height > 0) ws->launcher.height = height;
+    if (!ws->launcher.buffer) {
+        launcher_populate_entries(ws);
+        int cols = 4;
+        int ew = 130, eh = 34;
+        int rows = (ws->launcher.n_entries + cols - 1) / cols;
+        ws->launcher.cols = cols;
+        ws->launcher.entry_w = ew;
+        ws->launcher.entry_h = eh;
+        ws->launcher.grid_x = 14;
+        ws->launcher.grid_y = 34;
+        ws->launcher.width = 14 + cols * (ew + 8) + 14;
+        ws->launcher.height = 34 + rows * (eh + 6) + 14;
+        if (ws->launcher.height > 600) ws->launcher.height = 600;
+        launcher_create_buffer(ws);
+        launcher_render(ws);
+    }
+    ws->launcher.configured = true;
+}
+
+static void launcher_layer_surface_closed(void *data,
+    struct zwlr_layer_surface_v1 *surface)
+{
+    ((struct wl_status *)data)->launcher.visible = false;
+}
+
+static const struct zwlr_layer_surface_v1_listener launcher_layer_surface_listener = {
+    .configure = launcher_layer_surface_configure,
+    .closed = launcher_layer_surface_closed,
+};
+
+static void launcher_show(struct wl_status *ws)
+{
+    if (ws->popup.visible) popup_destroy(ws);
+    if (ws->launcher.visible) launcher_destroy(ws);
+
+    memset(&ws->launcher, 0, sizeof(ws->launcher));
+    ws->launcher.hovered_idx = -1;
+    ws->launcher.width = 400;
+    ws->launcher.height = 400;
+
+    ws->launcher.surface = wl_compositor_create_surface(ws->compositor);
+    ws->launcher.layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+        ws->layer_shell, ws->launcher.surface, NULL,
+        ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "wlstatus-launcher");
+
+    zwlr_layer_surface_v1_add_listener(ws->launcher.layer_surface,
+        &launcher_layer_surface_listener, ws);
+
+    zwlr_layer_surface_v1_set_size(ws->launcher.layer_surface, ws->launcher.width, ws->launcher.height);
+    zwlr_layer_surface_v1_set_anchor(ws->launcher.layer_surface,
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
+
+    const char *anchor_str = config_get(ws->cfg, "bar_anchor", "top");
+    int bar_on_bottom = (strcmp(anchor_str, "bottom") == 0);
+    if (bar_on_bottom) {
+        zwlr_layer_surface_v1_set_anchor(ws->launcher.layer_surface,
+            ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
+        zwlr_layer_surface_v1_set_margin(ws->launcher.layer_surface,
+            0, 0, ws->height + 4, BAR_PADDING);
+    } else {
+        zwlr_layer_surface_v1_set_margin(ws->launcher.layer_surface,
+            ws->height + 4, 0, 0, BAR_PADDING);
+    }
+    zwlr_layer_surface_v1_set_exclusive_zone(ws->launcher.layer_surface, 0);
+    ws->launcher.visible = true;
+    wl_surface_commit(ws->launcher.surface);
+}
+
 static void tooltip_destroy(struct wl_status *ws)
 {
     if (!ws->tooltip.visible) return;
@@ -489,6 +766,7 @@ static const char *config_path(void);
 static void reload(struct wl_status *ws)
 {
     if (ws->popup.visible) popup_destroy(ws);
+    if (ws->launcher.visible) launcher_destroy(ws);
     if (ws->tooltip.visible) tooltip_destroy(ws);
     destroy_buffer(ws);
     if (ws->bar) bar_destroy(ws->bar);
@@ -577,6 +855,8 @@ static void pointer_enter(void *data, struct wl_pointer *pointer,
 
     if (ws->popup.visible && surface == ws->popup.surface)
         return;
+    if (ws->launcher.visible && surface == ws->launcher.surface)
+        return;
 
     bar_update_hover(ws->bar, ws->pointer_x, ws->pointer_y);
     render(ws);
@@ -617,6 +897,13 @@ static void pointer_leave(void *data, struct wl_pointer *pointer,
         }
         return;
     }
+    if (ws->launcher.visible && surface == ws->launcher.surface) {
+        if (ws->launcher.hovered_idx != -1) {
+            ws->launcher.hovered_idx = -1;
+            launcher_render(ws);
+        }
+        return;
+    }
 
     bar_clear_hover(ws->bar);
     render(ws);
@@ -644,6 +931,28 @@ static void pointer_motion(void *data, struct wl_pointer *pointer,
             ws->popup.hovered_btn = 1;
         if (old != ws->popup.hovered_btn)
             popup_render(ws);
+        return;
+    }
+    if (ws->launcher.visible && ws->current_pointer_surface == ws->launcher.surface) {
+        int old = ws->launcher.hovered_idx;
+        ws->launcher.hovered_idx = -1;
+        int cols = ws->launcher.cols;
+        int ew = ws->launcher.entry_w;
+        int eh = ws->launcher.entry_h;
+        int gx = ws->launcher.grid_x;
+        int gy = ws->launcher.grid_y;
+        for (int i = 0; i < ws->launcher.n_entries; i++) {
+            int row = i / cols;
+            int col = i % cols;
+            int ex = gx + col * (ew + 8);
+            int ey = gy + row * (eh + 6);
+            if (x >= ex && x < ex + ew && y >= ey && y < ey + eh) {
+                ws->launcher.hovered_idx = i;
+                break;
+            }
+        }
+        if (old != ws->launcher.hovered_idx)
+            launcher_render(ws);
         return;
     }
 
@@ -721,12 +1030,42 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
         }
     }
 
+    if (ws->launcher.visible) {
+        if (ws->current_pointer_surface == ws->launcher.surface) {
+            int x = ws->pointer_x, y = ws->pointer_y;
+            int cols = ws->launcher.cols;
+            int ew = ws->launcher.entry_w;
+            int eh = ws->launcher.entry_h;
+            int gx = ws->launcher.grid_x;
+            int gy = ws->launcher.grid_y;
+            for (int i = 0; i < ws->launcher.n_entries; i++) {
+                int row = i / cols;
+                int col = i % cols;
+                int ex = gx + col * (ew + 8);
+                int ey = gy + row * (eh + 6);
+                if (x >= ex && x < ex + ew && y >= ey && y < ey + eh) {
+                    execute_command(ws->launcher.entries[i].exec);
+                    launcher_destroy(ws);
+                    return;
+                }
+            }
+        } else {
+            launcher_destroy(ws);
+            return;
+        }
+    }
+
     enum click_action action = bar_handle_click(ws->bar,
         ws->pointer_x, ws->pointer_y);
 
     if (action == CLICK_POWEROFF || action == CLICK_REBOOT || action == CLICK_SUSPEND) {
         int a = (action == CLICK_POWEROFF) ? 0 : (action == CLICK_REBOOT) ? 1 : 2;
         popup_create(ws, a);
+        return;
+    }
+
+    if (action == CLICK_LAUNCHER) {
+        launcher_show(ws);
         return;
     }
 
@@ -968,8 +1307,9 @@ check_reload:
 
     if (ws.timer_fd >= 0) close(ws.timer_fd);
     if (ws.inotify_fd >= 0) close(ws.inotify_fd);
-    popup_destroy(&ws);
-    tooltip_destroy(&ws);
+    if (ws.popup.visible) popup_destroy(&ws);
+    if (ws.launcher.visible) launcher_destroy(&ws);
+    if (ws.tooltip.visible) tooltip_destroy(&ws);
     destroy_buffer(&ws);
     if (ws.pointer) wl_pointer_destroy(ws.pointer);
     if (ws.seat) wl_seat_destroy(ws.seat);
