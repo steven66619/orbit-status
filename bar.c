@@ -338,40 +338,7 @@ void bar_render(struct bar *bar, cairo_t *cr)
 
     draw_background(cr, bar->width, bar->height, bar->cfg);
 
-    int launcher_x = BAR_PADDING;
-    if (config_get_int(bar->cfg, "show_applauncher", 0)) {
-        int lh = 22;
-        int ly = (bar->height - lh) / 2;
-        draw_rounded_rect(cr, launcher_x, ly, 36, lh, lh / 2);
-        float acc[4];
-        float def_acc[] = {0.0f, 0.90f, 1.0f, 1.0f};
-        config_get_color(bar->cfg, "accent_color", acc, def_acc);
-        cairo_set_source_rgba(cr, acc[0], acc[1], acc[2], 0.25);
-        cairo_fill(cr);
-
-        cairo_set_source_rgba(cr, acc[0], acc[1], acc[2], 0.8);
-        cairo_set_line_width(cr, 1.5);
-        draw_rounded_rect(cr, launcher_x, ly, 36, lh, lh / 2);
-        cairo_stroke(cr);
-
-        cairo_set_source_rgba(cr, acc[0], acc[1], acc[2], 0.9);
-        cairo_arc(cr, launcher_x + 12, ly + lh / 2, 4, 0, 2 * M_PI);
-        cairo_fill(cr);
-        cairo_arc(cr, launcher_x + 22, ly + lh / 2, 4, 0, 2 * M_PI);
-        cairo_fill(cr);
-        cairo_arc(cr, launcher_x + 32, ly + lh / 2, 4, 0, 2 * M_PI);
-        cairo_fill(cr);
-
-        if (bar->n_clickables < 32) {
-            bar->clickables[bar->n_clickables++] = (struct clickable){
-                .x = launcher_x, .y = ly, .w = 36, .h = lh,
-                .action = CLICK_LAUNCHER,
-            };
-        }
-        launcher_x += 36 + 8;
-    }
-
-    int ws_start = launcher_x;
+    int ws_start = BAR_PADDING;
     draw_workspaces(bar, cr, bar->height, ws_start);
 
     if (config_get_int(bar->cfg, "show_power", 1))
