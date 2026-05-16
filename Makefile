@@ -4,10 +4,10 @@ CFLAGS ?= -O2 -pipe
 WAYLAND_SCANNER := $(shell pkg-config --variable=wayland_scanner wayland-scanner)
 PROTOCOLS_DIR := /usr/share/wayland-protocols
 
-CFLAGS += $(shell pkg-config --cflags wayland-client cairo pangocairo) \
+CFLAGS += $(shell pkg-config --cflags wayland-client cairo pangocairo xkbcommon) \
 	-std=c99 -Wall -Wextra -D_POSIX_C_SOURCE=200809L \
 	-Wno-unused-parameter
-LDLIBS = $(shell pkg-config --libs wayland-client cairo pangocairo) -lm
+LDLIBS = $(shell pkg-config --libs wayland-client cairo pangocairo xkbcommon) -lm
 
 WLROOT := wlr-layer-shell-unstable-v1
 WLHEADER := $(WLROOT)-client.h

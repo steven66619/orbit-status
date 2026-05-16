@@ -13,9 +13,11 @@
 #include <sys/inotify.h>
 #include <signal.h>
 #include <errno.h>
+#include <ctype.h>
 #include "wlr-layer-shell-unstable-v1-client.h"
 #include <cairo.h>
 #include <pango/pangocairo.h>
+#include <xkbcommon/xkbcommon.h>
 #include "bar.h"
 #include "config.h"
 
@@ -30,6 +32,10 @@ struct wl_status {
     struct wl_surface *surface;
     struct wl_seat *seat;
     struct wl_pointer *pointer;
+    struct wl_keyboard *keyboard;
+    struct xkb_context *xkb_ctx;
+    struct xkb_keymap *xkb_keymap;
+    struct xkb_state *xkb_state;
 
     struct wl_buffer *buffer;
     cairo_surface_t *cairo_surface;
@@ -60,6 +66,10 @@ struct wl_status {
         bool visible, configured;
         int n_entries;
         struct { char name[64]; char exec[256]; } entries[64];
+        int filtered[64];
+        int n_filtered;
+        int scroll_offset;
+        char search[64];
         int hovered_idx;
         int cols;
         int entry_w, entry_h;
@@ -351,6 +361,18 @@ static void popup_create(struct wl_status *ws, int action)
     wl_surface_commit(ws->popup.surface);
 }
 
+static void launcher_update_filter(struct wl_status *ws)
+{
+    ws->launcher.n_filtered = 0;
+    ws->launcher.scroll_offset = 0;
+    for (int i = 0; i < ws->launcher.n_entries && ws->launcher.n_filtered < 64; i++) {
+        if (ws->launcher.search[0] == '\0' ||
+            strcasestr(ws->launcher.entries[i].name, ws->launcher.search)) {
+            ws->launcher.filtered[ws->launcher.n_filtered++] = i;
+        }
+    }
+}
+
 static void launcher_populate_entries(struct wl_status *ws)
 {
     ws->launcher.n_entries = 0;
@@ -359,7 +381,7 @@ static void launcher_populate_entries(struct wl_status *ws)
         "  name=$(grep '^Name=' \"$f\" | head -1 | cut -d= -f2); "
         "  exec=$(grep '^Exec=' \"$f\" | head -1 | cut -d= -f2 | sed 's/%.//g' | cut -d' ' -f1); "
         "  [ -n \"$name\" ] && [ -n \"$exec\" ] && echo \"$name|$exec\"; "
-        "done | sort -f | head -48", "r");
+        "done | sort -f", "r");
     if (!fp) return;
     char line[384];
     while (fgets(line, sizeof(line), fp) && ws->launcher.n_entries < 64) {
@@ -378,6 +400,7 @@ static void launcher_populate_entries(struct wl_status *ws)
         snprintf(ws->launcher.entries[i].exec, sizeof(ws->launcher.entries[i].exec), "%s", sep);
     }
     pclose(fp);
+    launcher_update_filter(ws);
 }
 
 static void launcher_destroy_buffer(struct wl_status *ws)
@@ -464,18 +487,57 @@ static void launcher_render(struct wl_status *ws)
     pango_cairo_show_layout(cr, lay_title);
     g_object_unref(lay_title);
 
+    int search_box_y = 32;
+    int sb_h = 26;
+    char search_display[128];
+    if (ws->launcher.search[0] == '\0') {
+        snprintf(search_display, sizeof(search_display), ">_");
+    } else {
+        snprintf(search_display, sizeof(search_display), "> %s_", ws->launcher.search);
+    }
+    PangoFontDescription *fd_search = pango_font_description_from_string("Monospace 11");
+    PangoLayout *lay_search = pango_cairo_create_layout(cr);
+    pango_layout_set_font_description(lay_search, fd_search);
+    pango_layout_set_text(lay_search, search_display, -1);
+    int stw, sth;
+    pango_layout_get_pixel_size(lay_search, &stw, &sth);
+
+    int sb_margin = 10;
+    int sb_w = w - 2 * sb_margin;
+    cairo_set_source_rgba(cr, 0.08, 0.06, 0.18, 0.9);
+    draw_rounded_rect(cr, sb_margin, search_box_y, sb_w, sb_h, 4);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, acc[0], acc[1], acc[2], 0.5);
+    cairo_set_line_width(cr, 1);
+    draw_rounded_rect(cr, sb_margin, search_box_y, sb_w, sb_h, 4);
+    cairo_stroke(cr);
+    cairo_set_source_rgb(cr, 0.7, 0.75, 1.0);
+    cairo_move_to(cr, sb_margin + 8, search_box_y + (sb_h - sth) / 2);
+    pango_cairo_show_layout(cr, lay_search);
+    g_object_unref(lay_search);
+    pango_font_description_free(fd_search);
+
     int cols = ws->launcher.cols;
     int ew = ws->launcher.entry_w;
     int eh = ws->launcher.entry_h;
     int gx = ws->launcher.grid_x;
     int gy = ws->launcher.grid_y;
 
+    int grid_skip = ws->launcher.scroll_offset * cols;
+    int n_visible = ws->launcher.n_filtered - grid_skip;
+    if (n_visible < 0) n_visible = 0;
+
+    int grid_top = gy;
+    int max_rows = (h - grid_top) / (eh + 6);
+    if (n_visible > max_rows * cols) n_visible = max_rows * cols;
+
     PangoFontDescription *fd_entry = pango_font_description_from_string("Sans 10");
-    for (int i = 0; i < ws->launcher.n_entries; i++) {
-        int row = i / cols;
-        int col = i % cols;
+    for (int j = 0; j < n_visible; j++) {
+        int i = ws->launcher.filtered[grid_skip + j];
+        int row = j / cols;
+        int col = j % cols;
         int ex = gx + col * (ew + 8);
-        int ey = gy + row * (eh + 6);
+        int ey = grid_top + row * (eh + 6);
 
         if (ex + ew > w || ey + eh > h) break;
 
@@ -523,6 +585,9 @@ static void launcher_destroy(struct wl_status *ws)
 {
     if (!ws->launcher.visible) return;
     ws->launcher.visible = false;
+    ws->launcher.search[0] = '\0';
+    ws->launcher.scroll_offset = 0;
+    ws->launcher.hovered_idx = -1;
     launcher_destroy_buffer(ws);
     if (ws->launcher.layer_surface) {
         zwlr_layer_surface_v1_destroy(ws->launcher.layer_surface);
@@ -547,14 +612,15 @@ static void launcher_layer_surface_configure(void *data,
         launcher_populate_entries(ws);
         int cols = 4;
         int ew = 130, eh = 34;
-        int rows = (ws->launcher.n_entries + cols - 1) / cols;
         ws->launcher.cols = cols;
         ws->launcher.entry_w = ew;
         ws->launcher.entry_h = eh;
         ws->launcher.grid_x = 14;
-        ws->launcher.grid_y = 34;
+        ws->launcher.grid_y = 70;
+        int max_rows = (ws->launcher.n_filtered + cols - 1) / cols;
+        if (max_rows > 7) max_rows = 7;
         ws->launcher.width = 14 + cols * (ew + 8) + 14;
-        ws->launcher.height = 34 + rows * (eh + 6) + 14;
+        ws->launcher.height = 70 + max_rows * (eh + 6) + 14;
         if (ws->launcher.height > 600) ws->launcher.height = 600;
         launcher_create_buffer(ws);
         launcher_render(ws);
@@ -941,9 +1007,11 @@ static void pointer_motion(void *data, struct wl_pointer *pointer,
         int eh = ws->launcher.entry_h;
         int gx = ws->launcher.grid_x;
         int gy = ws->launcher.grid_y;
-        for (int i = 0; i < ws->launcher.n_entries; i++) {
-            int row = i / cols;
-            int col = i % cols;
+        int skip = ws->launcher.scroll_offset * cols;
+        for (int j = 0; j < ws->launcher.n_filtered - skip; j++) {
+            int i = ws->launcher.filtered[skip + j];
+            int row = j / cols;
+            int col = j % cols;
             int ex = gx + col * (ew + 8);
             int ey = gy + row * (eh + 6);
             if (x >= ex && x < ex + ew && y >= ey && y < ey + eh) {
@@ -1038,9 +1106,11 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
             int eh = ws->launcher.entry_h;
             int gx = ws->launcher.grid_x;
             int gy = ws->launcher.grid_y;
-            for (int i = 0; i < ws->launcher.n_entries; i++) {
-                int row = i / cols;
-                int col = i % cols;
+            int skip = ws->launcher.scroll_offset * cols;
+            for (int j = 0; j < ws->launcher.n_filtered - skip; j++) {
+                int i = ws->launcher.filtered[skip + j];
+                int row = j / cols;
+                int col = j % cols;
                 int ex = gx + col * (ew + 8);
                 int ey = gy + row * (eh + 6);
                 if (x >= ex && x < ex + ew && y >= ey && y < ey + eh) {
@@ -1083,9 +1153,226 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
 }
 
 static void pointer_axis(void *data, struct wl_pointer *pointer,
-    uint32_t time, uint32_t axis, wl_fixed_t value) {}
+    uint32_t time, uint32_t axis, wl_fixed_t value)
+{
+    struct wl_status *ws = data;
+    if (!ws->launcher.visible || axis != 0) return;
+    int delta = wl_fixed_to_int(value);
+    if (delta == 0) return;
+    int cols = ws->launcher.cols;
+    int total_rows = (ws->launcher.n_filtered + cols - 1) / cols;
+    int eh = ws->launcher.entry_h;
+    int grid_h = ws->launcher.height - ws->launcher.grid_y - 14;
+    int visible_rows = grid_h / (eh + 6);
+    if (visible_rows < 1) visible_rows = 1;
+    int max_scroll = total_rows - visible_rows;
+    if (max_scroll < 0) max_scroll = 0;
+    int old = ws->launcher.scroll_offset;
+    ws->launcher.scroll_offset -= delta;
+    if (ws->launcher.scroll_offset < 0) ws->launcher.scroll_offset = 0;
+    if (ws->launcher.scroll_offset > max_scroll) ws->launcher.scroll_offset = max_scroll;
+    if (old != ws->launcher.scroll_offset) {
+        ws->launcher.hovered_idx = -1;
+        launcher_render(ws);
+    }
+}
 
 static void pointer_frame(void *data, struct wl_pointer *pointer) {}
+
+static void keyboard_keymap(void *data, struct wl_keyboard *kb,
+    uint32_t format, int fd, uint32_t size)
+{
+    struct wl_status *ws = data;
+    if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) { close(fd); return; }
+    char *map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (map == MAP_FAILED) { close(fd); return; }
+    ws->xkb_keymap = xkb_keymap_new_from_string(ws->xkb_ctx, map,
+        XKB_KEYMAP_FORMAT_TEXT_V1, 0);
+    munmap(map, size);
+    close(fd);
+    if (!ws->xkb_keymap) return;
+    ws->xkb_state = xkb_state_new(ws->xkb_keymap);
+}
+
+static void keyboard_enter(void *data, struct wl_keyboard *kb,
+    uint32_t serial, struct wl_surface *surface, struct wl_array *keys) {}
+
+static void keyboard_leave(void *data, struct wl_keyboard *kb,
+    uint32_t serial, struct wl_surface *surface) {}
+
+static void keyboard_key(void *data, struct wl_keyboard *kb,
+    uint32_t serial, uint32_t time, uint32_t key, uint32_t state)
+{
+    struct wl_status *ws = data;
+    if (state != 1 || !ws->launcher.visible) return;
+    if (!ws->xkb_state) return;
+    xkb_keysym_t sym = xkb_state_key_get_one_sym(ws->xkb_state, key);
+
+    if (sym == XKB_KEY_Escape) {
+        launcher_destroy(ws);
+        return;
+    }
+    if (sym == XKB_KEY_Return) {
+        int skip = ws->launcher.scroll_offset * ws->launcher.cols;
+        for (int j = 0; j < ws->launcher.n_filtered - skip; j++) {
+            int i = ws->launcher.filtered[skip + j];
+            if (i == ws->launcher.hovered_idx) {
+                execute_command(ws->launcher.entries[i].exec);
+                launcher_destroy(ws);
+                return;
+            }
+        }
+        if (ws->launcher.n_filtered > 0) {
+            execute_command(ws->launcher.entries[ws->launcher.filtered[0]].exec);
+            launcher_destroy(ws);
+        }
+        return;
+    }
+    if (sym == XKB_KEY_BackSpace) {
+        int len = strlen(ws->launcher.search);
+        if (len > 0) ws->launcher.search[len - 1] = '\0';
+        launcher_update_filter(ws);
+        launcher_render(ws);
+        return;
+    }
+    if (sym == XKB_KEY_Up || sym == XKB_KEY_KP_Up) {
+        int skip = ws->launcher.scroll_offset * ws->launcher.cols;
+        int n_visible = ws->launcher.n_filtered - skip;
+        if (n_visible > 0) {
+            int cur = -1;
+            for (int j = 0; j < n_visible; j++) {
+                if (ws->launcher.filtered[skip + j] == ws->launcher.hovered_idx) {
+                    cur = j;
+                    break;
+                }
+            }
+            int cols = ws->launcher.cols;
+            int new_cur;
+            if (cur < 0) {
+                new_cur = 0;
+            } else if (cur < cols) {
+                if (ws->launcher.scroll_offset > 0) {
+                    ws->launcher.scroll_offset--;
+                    new_cur = cur + cols;
+                } else {
+                    new_cur = cur;
+                }
+            } else {
+                new_cur = cur - cols;
+            }
+            if (new_cur < n_visible) {
+                ws->launcher.hovered_idx = ws->launcher.filtered[skip + new_cur];
+                launcher_render(ws);
+            }
+        }
+        return;
+    }
+    if (sym == XKB_KEY_Down || sym == XKB_KEY_KP_Down) {
+        int skip = ws->launcher.scroll_offset * ws->launcher.cols;
+        int n_visible = ws->launcher.n_filtered - skip;
+        if (n_visible > 0) {
+            int cur = -1;
+            for (int j = 0; j < n_visible; j++) {
+                if (ws->launcher.filtered[skip + j] == ws->launcher.hovered_idx) {
+                    cur = j;
+                    break;
+                }
+            }
+            int cols = ws->launcher.cols;
+            int total_rows = (ws->launcher.n_filtered + cols - 1) / cols;
+            int eh = ws->launcher.entry_h;
+            int grid_h = ws->launcher.height - ws->launcher.grid_y - 14;
+            int visible_rows = grid_h / (eh + 6);
+            if (visible_rows < 1) visible_rows = 1;
+            int max_scroll = total_rows - visible_rows;
+            int new_cur;
+            if (cur < 0) {
+                new_cur = 0;
+            } else if (cur + cols >= n_visible) {
+                if (ws->launcher.scroll_offset < max_scroll) {
+                    ws->launcher.scroll_offset++;
+                    new_cur = cur - cols;
+                } else {
+                    new_cur = cur;
+                }
+            } else {
+                new_cur = cur + cols;
+            }
+            if (new_cur >= 0 && new_cur < n_visible) {
+                ws->launcher.hovered_idx = ws->launcher.filtered[skip + new_cur];
+                launcher_render(ws);
+            }
+        }
+        return;
+    }
+    if (sym == XKB_KEY_Right || sym == XKB_KEY_KP_Right) {
+        int skip = ws->launcher.scroll_offset * ws->launcher.cols;
+        int n_visible = ws->launcher.n_filtered - skip;
+        int cur = -1;
+        for (int j = 0; j < n_visible; j++) {
+            if (ws->launcher.filtered[skip + j] == ws->launcher.hovered_idx) {
+                cur = j;
+                break;
+            }
+        }
+        if (cur < 0) cur = -1;
+        if (cur + 1 < n_visible) {
+            ws->launcher.hovered_idx = ws->launcher.filtered[skip + cur + 1];
+            launcher_render(ws);
+        }
+        return;
+    }
+    if (sym == XKB_KEY_Left || sym == XKB_KEY_KP_Left) {
+        int skip = ws->launcher.scroll_offset * ws->launcher.cols;
+        int n_visible = ws->launcher.n_filtered - skip;
+        int cur = -1;
+        for (int j = 0; j < n_visible; j++) {
+            if (ws->launcher.filtered[skip + j] == ws->launcher.hovered_idx) {
+                cur = j;
+                break;
+            }
+        }
+        if (cur > 0) {
+            ws->launcher.hovered_idx = ws->launcher.filtered[skip + cur - 1];
+            launcher_render(ws);
+        }
+        return;
+    }
+
+    char buf[8];
+    int n = xkb_keysym_to_utf8(sym, buf, sizeof(buf));
+    if (n > 0 && isprint((unsigned char)buf[0])) {
+        buf[n] = '\0';
+        int len = strlen(ws->launcher.search);
+        if (len + n < (int)sizeof(ws->launcher.search) - 1) {
+            memcpy(ws->launcher.search + len, buf, n);
+            ws->launcher.search[len + n] = '\0';
+        }
+        launcher_update_filter(ws);
+        launcher_render(ws);
+    }
+}
+
+static void keyboard_modifiers(void *data, struct wl_keyboard *kb,
+    uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched,
+    uint32_t mods_locked, uint32_t group)
+{
+    struct wl_status *ws = data;
+    if (ws->xkb_state)
+        xkb_state_update_mask(ws->xkb_state, mods_depressed, mods_latched, mods_locked, 0, 0, group);
+}
+
+static void keyboard_repeat_info(void *data, struct wl_keyboard *kb,
+    int32_t rate, int32_t delay) {}
+
+static const struct wl_keyboard_listener keyboard_listener = {
+    .keymap = keyboard_keymap,
+    .enter = keyboard_enter,
+    .leave = keyboard_leave,
+    .key = keyboard_key,
+    .modifiers = keyboard_modifiers,
+    .repeat_info = keyboard_repeat_info,
+};
 
 static const struct wl_pointer_listener pointer_listener = {
     .enter = pointer_enter,
@@ -1106,6 +1393,13 @@ static void seat_capabilities(void *data, struct wl_seat *seat,
     } else if (!(capabilities & 1) && ws->pointer) {
         wl_pointer_destroy(ws->pointer);
         ws->pointer = NULL;
+    }
+    if ((capabilities & 2) && !ws->keyboard) {
+        ws->keyboard = wl_seat_get_keyboard(seat);
+        wl_keyboard_add_listener(ws->keyboard, &keyboard_listener, ws);
+    } else if (!(capabilities & 2) && ws->keyboard) {
+        wl_keyboard_destroy(ws->keyboard);
+        ws->keyboard = NULL;
     }
 }
 
@@ -1212,6 +1506,10 @@ int main(int argc, char *argv[])
         fprintf(stderr, "missing required wayland globals\n");
         return 1;
     }
+
+    ws.xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    if (!ws.xkb_ctx)
+        fprintf(stderr, "warning: failed to create xkb context (keyboard input disabled)\n");
 
     if (setup_layer_surface(&ws) < 0)
         return 1;
