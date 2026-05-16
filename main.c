@@ -672,6 +672,8 @@ static void launcher_show(struct wl_status *ws)
         zwlr_layer_surface_v1_set_margin(ws->launcher.layer_surface,
             ws->height + 4, 0, 0, BAR_PADDING);
     }
+    zwlr_layer_surface_v1_set_keyboard_interactivity(ws->launcher.layer_surface,
+        ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
     zwlr_layer_surface_v1_set_exclusive_zone(ws->launcher.layer_surface, 0);
     ws->launcher.visible = true;
     wl_surface_commit(ws->launcher.surface);
