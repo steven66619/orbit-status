@@ -2,11 +2,8 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$REPO_DIR/.." && pwd)"
-
 ARCH="${ARCH:-amd64}"
 DIST="${DIST:-stable}"
-VERSION="${VERSION:-1.0-1}"
 
 APT_POOL="$REPO_DIR/apt/pool/main"
 APT_DIST="$REPO_DIR/apt/dists/$DIST"
@@ -14,65 +11,79 @@ APT_BINARY="$APT_DIST/main/binary-$ARCH"
 YUM_DIR="$REPO_DIR/yum/$ARCH"
 ARCH_DIR="$REPO_DIR/arch/x86_64"
 
-build_arch_pkg() {
-    local pkgbuild="$1"
-    local db_name="$2"
-    echo "    Building $db_name from $pkgbuild..."
-    BUILD_DIR=$(mktemp -d)
-    cp "$PROJECT_DIR/$pkgbuild" "$BUILD_DIR/PKGBUILD"
-    cp "$PROJECT_DIR"/*.c "$PROJECT_DIR"/*.h "$PROJECT_DIR/Makefile" "$BUILD_DIR/" 2>/dev/null || true
-    cp "$PROJECT_DIR/"*.xml "$BUILD_DIR/" 2>/dev/null || true
-    (cd "$BUILD_DIR" && makepkg -f --noconfirm)
-    cp "$BUILD_DIR"/*.pkg.tar.zst "$ARCH_DIR/"
-    rm -rf "$BUILD_DIR"
-    cd "$ARCH_DIR"
-    repo-add "$db_name.db.tar.zst" "$db_name"-*.pkg.tar.zst
+install_deps_ci() {
+    echo "==> Installing CI dependencies..."
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq dpkg-dev apt-utils createrepo-c
 }
 
-echo "==> Updating APT repo ($DIST/$ARCH)..."
-mkdir -p "$APT_POOL" "$APT_BINARY" "$YUM_DIR" "$ARCH_DIR"
-
-for deb in "$PROJECT_DIR"/../wlstatus_*.deb; do
-    [ -f "$deb" ] && cp "$deb" "$APT_POOL/"
-done
-
-if command -v dpkg-scanpackages &>/dev/null; then
-    dpkg-scanpackages --multiversion "$REPO_DIR/apt/pool/" > "$APT_BINARY/Packages"
+generate_apt() {
+    echo "==> Generating APT repo ($DIST/$ARCH)..."
+    mkdir -p "$APT_POOL" "$APT_BINARY"
+    if [ -z "$(ls "$APT_POOL"/*.deb 2>/dev/null)" ]; then
+        echo "    No .deb packages found, skipping APT"
+        return
+    fi
+    dpkg-scanpackages --multiversion "$REPO_DIR/apt/pool/" 2>/dev/null > "$APT_BINARY/Packages"
     gzip -kf "$APT_BINARY/Packages"
-fi
-
-if command -v apt-ftparchive &>/dev/null; then
     apt-ftparchive release "$APT_DIST" > "$APT_DIST/Release"
-    if gpg --list-keys wlstatus &>/dev/null; then
+    if gpg --list-keys ste@example.com &>/dev/null 2>&1; then
         gpg --detach-sign --armor -o "$APT_DIST/Release.gpg" "$APT_DIST/Release"
         gpg --clearsign -o "$APT_DIST/InRelease" "$APT_DIST/Release"
     fi
-fi
+    echo "    APT repo ready"
+}
 
-echo "==> Updating YUM repo ($ARCH)..."
-if command -v createrepo_c &>/dev/null; then
-    createrepo_c --update "$YUM_DIR" 2>/dev/null || echo "    (createrepo_c update skipped)"
-fi
+generate_yum() {
+    echo "==> Generating YUM repo ($ARCH)..."
+    mkdir -p "$YUM_DIR"
+    if [ -z "$(ls "$YUM_DIR"/*.rpm 2>/dev/null)" ]; then
+        echo "    No .rpm packages found, skipping YUM"
+        return
+    fi
+    if command -v createrepo_c &>/dev/null; then
+        createrepo_c --update "$YUM_DIR" --no-database 2>/dev/null || \
+        createrepo_c --update "$YUM_DIR" 2>/dev/null || \
+        echo "    createrepo_c failed, skipping YUM metadata"
+    else
+        echo "    createrepo_c not available, skipping YUM metadata"
+    fi
+}
 
-echo "==> Updating Arch repo..."
-if ! ls "$ARCH_DIR"/wlstatus-*.pkg.tar.zst &>/dev/null; then
-    echo "    wlstatus not found, building..."
-    build_arch_pkg PKGBUILD wlstatus
-else
-    echo "    wlstatus exists, reindexing..."
-    cd "$ARCH_DIR" && repo-add wlstatus.db.tar.zst wlstatus-*.pkg.tar.zst
-fi
+generate_arch() {
+    echo "==> Generating Arch repo..."
+    mkdir -p "$ARCH_DIR"
+    local arch_arch="x86_64"
+    pushd "$ARCH_DIR" >/dev/null
+    for db in wlstatus wlstatus-personal; do
+        local pattern
+        case "$db" in
+            wlstatus) pattern="wlstatus-*-${arch_arch}.pkg.tar.zst" ;;
+            wlstatus-personal) pattern="wlstatus-personal-*-${arch_arch}.pkg.tar.zst" ;;
+        esac
+        if [ -z "$(ls $pattern 2>/dev/null)" ]; then
+            echo "    No $db packages ($pattern) found, skipping"
+            continue
+        fi
+        repo-add "$db.db.tar.zst" $pattern 2>/dev/null
+    done
+    popd >/dev/null
+}
 
-echo ""
-echo "==> Done. Repo updated at $REPO_DIR"
-echo "    APT:  file://$REPO_DIR/apt"
-echo "    YUM:  file://$REPO_DIR/yum"
-echo "    Arch: file://$REPO_DIR/arch"
-
-echo ""
-echo "==> To deploy to GitHub Pages:"
-echo "    git checkout gh-pages"
-echo "    git rm -r ."
-echo "    cp -r $REPO_DIR/* ."
-echo "    git add -A && git commit -m 'deploy: \$(git rev-parse HEAD)'"
-echo "    git push origin gh-pages"
+case "${1:-}" in
+    ci-deps) install_deps_ci ;;
+    apt) generate_apt ;;
+    yum) generate_yum ;;
+    arch) generate_arch ;;
+    all|"")
+        generate_apt
+        generate_yum
+        generate_arch
+        echo ""
+        echo "==> Done. Repo updated at $REPO_DIR"
+        ;;
+    *)
+        echo "Usage: $0 [all|apt|yum|arch|ci-deps]"
+        exit 1
+        ;;
+esac

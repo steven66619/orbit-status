@@ -1,0 +1,16 @@
+Origin: wlstatus
+Label: wlstatus
+Suite: stable
+Codename: stable
+Architectures: amd64
+Components: main
+Description: wlstatus package repository
+Date: Sat, 16 May 2026 19:22:22 +0000
+MD5Sum:
+ fff183804004d19eb874a54563a9ad85 706 main/binary-amd64/Packages
+SHA256:
+ 6d2b566e4dffd1ce5666643e4eff8a78998620006c073a3d2710a1a9a831d0b5 706 main/binary-amd64/Packages
+MD5Sum:
+ 2e39cac42c3f5c44b397d458d073d148 389 main/binary-amd64/Packages.gz
+SHA256:
+ a0776f492103061eeaa5e95ce5d50f69f821af24425842fb36b67a8d1bae08a2 389 main/binary-amd64/Packages.gz
