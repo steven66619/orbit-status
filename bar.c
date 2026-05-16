@@ -703,6 +703,7 @@ void bar_update_updates(struct bar *bar)
                 "sudo pacman -Sy --noconfirm 2>/dev/null", (char *)NULL);
             _exit(1);
         }
+        return;
     }
 
     const char *custom_cmd = config_get(bar->cfg, "update_cmd", "");
