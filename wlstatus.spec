@@ -2,7 +2,7 @@
 
 Name: wlstatus
 Version: 1.1
-Release: 1%{?dist}
+Release: 2%{?dist}
 Summary: Lightweight Wayland status bar with Lua plugin support
 
 License: MIT
@@ -38,6 +38,9 @@ make install PREFIX=/usr DESTDIR=%{buildroot}
 %{_datadir}/wlstatus/plugins/*.lua
 
 %changelog
+* Sun May 17 2026 steven66619 <ste@example.com> - 1.1-2
+- Add weather Lua plugin
+
 * Sun May 17 2026 steven66619 <ste@example.com> - 1.1-1
 - Lua plugin architecture — all modules are now Lua scripts
 - New config keys for Lua plugins
