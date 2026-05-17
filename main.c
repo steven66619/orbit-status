@@ -503,13 +503,7 @@ static void reload(struct wl_status *ws)
     ws->bar = bar_create(ws->width, ws->height, ws->cfg);
     create_buffer(ws);
     bar_update_workspaces(ws->bar);
-    bar_update_system_info(ws->bar);
-    bar_update_updates(ws->bar);
-    bar_update_disk(ws->bar);
-    bar_update_volume(ws->bar);
-    bar_update_network(ws->bar);
-    bar_update_battery(ws->bar);
-    bar_update_custom_modules(ws->bar);
+    bar_update_lua_plugins(ws->bar);
     render(ws);
 }
 
@@ -517,13 +511,7 @@ static void on_timer(struct wl_status *ws)
 {
     if (!ws->bar || !ws->running) return;
     bar_update_workspaces(ws->bar);
-    bar_update_system_info(ws->bar);
-    bar_update_updates(ws->bar);
-    bar_update_disk(ws->bar);
-    bar_update_volume(ws->bar);
-    bar_update_network(ws->bar);
-    bar_update_battery(ws->bar);
-    bar_update_custom_modules(ws->bar);
+    bar_update_lua_plugins(ws->bar);
     render(ws);
 }
 
@@ -551,13 +539,7 @@ static void layer_surface_configure(void *data,
     ws->configured = true;
 
     bar_update_workspaces(ws->bar);
-    bar_update_system_info(ws->bar);
-    bar_update_updates(ws->bar);
-    bar_update_disk(ws->bar);
-    bar_update_volume(ws->bar);
-    bar_update_network(ws->bar);
-    bar_update_battery(ws->bar);
-    bar_update_custom_modules(ws->bar);
+    bar_update_lua_plugins(ws->bar);
     render(ws);
 }
 
@@ -589,9 +571,14 @@ static void pointer_enter(void *data, struct wl_pointer *pointer,
 
     for (int i = 0; i < ws->bar->n_clickables; i++) {
         struct clickable *c = &ws->bar->clickables[i];
-        if (c->tooltip_cmd[0] &&
-            ws->pointer_x >= c->x && ws->pointer_x < c->x + c->w &&
-            ws->pointer_y >= c->y && ws->pointer_y < c->y + c->h) {
+        if (!(ws->pointer_x >= c->x && ws->pointer_x < c->x + c->w &&
+              ws->pointer_y >= c->y && ws->pointer_y < c->y + c->h))
+            continue;
+
+        if (c->tooltip_text[0]) {
+            ws->tooltip.hovered_clickable = i;
+            tooltip_show(ws, c->tooltip_text, ws->pointer_x, ws->pointer_y);
+        } else if (c->tooltip_cmd[0]) {
             FILE *fp = popen(c->tooltip_cmd, "r");
             if (fp) {
                 char buf[512] = {0};
@@ -605,8 +592,8 @@ static void pointer_enter(void *data, struct wl_pointer *pointer,
                 ws->tooltip.hovered_clickable = i;
                 tooltip_show(ws, buf, ws->pointer_x, ws->pointer_y);
             }
-            break;
         }
+        break;
     }
 }
 
@@ -663,7 +650,7 @@ static void pointer_motion(void *data, struct wl_pointer *pointer,
     int found_tooltip = -1;
     for (int i = 0; i < ws->bar->n_clickables; i++) {
         struct clickable *c = &ws->bar->clickables[i];
-        if (c->tooltip_cmd[0] &&
+        if ((c->tooltip_cmd[0] || c->tooltip_text[0]) &&
             x >= c->x && x < c->x + c->w &&
             y >= c->y && y < c->y + c->h) {
             found_tooltip = i;
@@ -671,18 +658,24 @@ static void pointer_motion(void *data, struct wl_pointer *pointer,
         }
     }
     if (found_tooltip >= 0 && found_tooltip != ws->tooltip.hovered_clickable) {
-        FILE *fp = popen(ws->bar->clickables[found_tooltip].tooltip_cmd, "r");
-        if (fp) {
-            char buf[512] = {0};
-            size_t total = 0;
-            char line[256];
-            while (fgets(line, sizeof(line), fp) && total < sizeof(buf) - 1) {
-                int len = snprintf(buf + total, sizeof(buf) - total, "%s", line);
-                if (len > 0) total += len;
-            }
-            pclose(fp);
+        struct clickable *c = &ws->bar->clickables[found_tooltip];
+        if (c->tooltip_text[0]) {
             ws->tooltip.hovered_clickable = found_tooltip;
-            tooltip_show(ws, buf, x, y);
+            tooltip_show(ws, c->tooltip_text, x, y);
+        } else {
+            FILE *fp = popen(c->tooltip_cmd, "r");
+            if (fp) {
+                char buf[512] = {0};
+                size_t total = 0;
+                char line[256];
+                while (fgets(line, sizeof(line), fp) && total < sizeof(buf) - 1) {
+                    int len = snprintf(buf + total, sizeof(buf) - total, "%s", line);
+                    if (len > 0) total += len;
+                }
+                pclose(fp);
+                ws->tooltip.hovered_clickable = found_tooltip;
+                tooltip_show(ws, buf, x, y);
+            }
         }
     } else if (found_tooltip < 0) {
         if (ws->tooltip.visible)

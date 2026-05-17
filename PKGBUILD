@@ -1,14 +1,14 @@
 # Maintainer: steven66619 <ste@example.com>
 pkgname=wlstatus
-pkgver=1.0
-pkgrel=2
-pkgdesc="Lightweight Wayland status bar for wlr-layer-shell compositors"
+pkgver=1.1
+pkgrel=1
+pkgdesc="Lightweight Wayland status bar with Lua plugin support"
 arch=('x86_64' 'aarch64')
-url="https://github.com/steven66619/wlstatus"
+url="https://github.com/steven66619/wlstatus-new"
 license=('MIT')
-depends=('wayland' 'cairo' 'pango' 'glib2' 'hyprland' 'hypridle' 'hyprlock' 'xdg-desktop-portal-hyprland')
+depends=('wayland' 'cairo' 'pango' 'glib2' 'lua5.4')
 makedepends=('wayland-protocols')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/wlstatus/archive/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/wlstatus-new/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 build() {

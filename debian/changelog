@@ -1,3 +1,15 @@
+wlstatus (1.1-1) unstable; urgency=medium
+
+  * Lua plugin architecture — all system modules are now Lua scripts.
+  * New config keys: lua_plugin_N_path, show_lua_plugin_N, lua_plugin_N_prefix,
+    lua_plugin_N_color, click_lua_plugin_N.
+  * Bundled Lua plugins for CPU, memory, disk, volume, network, battery, updates.
+  * Lua API: tick(), on_click(), on_tooltip(), interval variable.
+  * Removed hardcoded C modules (show_cpu, show_mem, etc.) and custom command
+    modules — replaced by generic Lua plugin system.
+
+ -- steven66619 <ste@example.com>  Sun, 17 May 2026 22:10:00 +0000
+
 wlstatus (1.0-2) unstable; urgency=medium
 
   * Remove application launcher.

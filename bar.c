@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
-#include <sys/statvfs.h>
 #include <pango/pangocairo.h>
 #include <math.h>
 
@@ -26,17 +25,17 @@ struct bar *bar_create(int width, int height, struct config *cfg)
     bar->n_icons = 0;
     bar->power_hovered = -1;
     bar->hovered_workspace = -1;
-    bar->n_workspaces = 0;
-    bar->cpu_prev_total = 0;
-    bar->cpu_prev_idle = 0;
-    bar->cpu_percent = 0;
-    bar->mem_percent = 0;
-    bar->updates_count = 0;
-    bar->updates_last_check = 0;
-    bar->updates_last_sync = 0;
-    bar->updates_auto_notified = false;
-    bar->disk_percent = 0;
-    bar->disk_last_check = 0;
+
+    bar->n_lua_plugins = 0;
+    for (int i = 0; i < MAX_LUA_PLUGINS; i++) {
+        char key[32];
+        snprintf(key, sizeof(key), "lua_plugin_%d_path", i + 1);
+        const char *path = config_get(cfg, key, "");
+        if (!path[0]) continue;
+
+        if (lua_plugin_init(&bar->lua_plugins[bar->n_lua_plugins], path) == 0)
+            bar->n_lua_plugins++;
+    }
 
     return bar;
 }
@@ -47,7 +46,15 @@ void bar_destroy(struct bar *bar)
     for (int i = 0; i < bar->n_icons; i++)
         if (bar->icons[i])
             cairo_surface_destroy(bar->icons[i]);
+    bar_lua_plugins_destroy(bar);
     free(bar);
+}
+
+void bar_lua_plugins_destroy(struct bar *bar)
+{
+    for (int i = 0; i < bar->n_lua_plugins; i++)
+        lua_plugin_destroy(&bar->lua_plugins[i]);
+    bar->n_lua_plugins = 0;
 }
 
 void bar_load_png_icon(struct bar *bar, const char *path, int index)
@@ -380,114 +387,32 @@ void bar_render(struct bar *bar, cairo_t *cr)
         int w, h;
         float border[3];
         float fill[4];
-    } pills[8];
+    } pills[16];
     int npills = 0;
 
-    if (config_get_int(bar->cfg, "show_cpu", 1)) {
-        const char *ico = config_get(bar->cfg, "cpu_icon", "CPU");
-        snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d%%", ico, bar->cpu_percent);
-        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_cpu");
-        pills[npills].border[0] = acc[0]; pills[npills].border[1] = acc[1]; pills[npills].border[2] = acc[2];
-        pills[npills].fill[0] = acc[0]*0.28f; pills[npills].fill[1] = acc[1]*0.28f; pills[npills].fill[2] = acc[2]*0.28f; pills[npills].fill[3] = 0.35f;
-        npills++;
-    }
-    if (config_get_int(bar->cfg, "show_mem", 1)) {
-        const char *ico = config_get(bar->cfg, "mem_icon", "MEM");
-        snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d%%", ico, bar->mem_percent);
-        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_mem");
-        pills[npills].border[0] = acc[0]; pills[npills].border[1] = acc[1]; pills[npills].border[2] = acc[2];
-        pills[npills].fill[0] = acc[0]*0.28f; pills[npills].fill[1] = acc[1]*0.28f; pills[npills].fill[2] = acc[2]*0.28f; pills[npills].fill[3] = 0.35f;
-        npills++;
-    }
-    if (config_get_int(bar->cfg, "show_updates", 1)) {
-        const char *ico = config_get(bar->cfg, "updates_icon", "UPD");
-        snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d", ico, bar->updates_count);
-        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_updates");
-        pills[npills].border[0] = 0.80f; pills[npills].border[1] = 0.20f; pills[npills].border[2] = 1.0f;
-        pills[npills].fill[0] = 0.30f; pills[npills].fill[1] = 0.05f; pills[npills].fill[2] = 0.40f; pills[npills].fill[3] = 0.30f;
-        if (bar->updates_count > 0) {
-            float alert[4];
-            float def_alert[] = {1.0f, 0.2f, 0.2f, 1.0f};
-            if (config_get_color(bar->cfg, "updates_alert_color", alert, def_alert)) {
-                pills[npills].border[0] = alert[0]; pills[npills].border[1] = alert[1]; pills[npills].border[2] = alert[2];
-                pills[npills].fill[0] = alert[0]*0.3f; pills[npills].fill[1] = alert[1]*0.3f; pills[npills].fill[2] = alert[2]*0.3f; pills[npills].fill[3] = 0.3f;
-            }
-        }
-        npills++;
-    }
-    if (config_get_int(bar->cfg, "show_disk", 1)) {
-        const char *ico = config_get(bar->cfg, "disk_icon", "DSK");
-        snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d%%", ico, bar->disk_percent);
-        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_disk");
-        pills[npills].border[0] = 0.20f; pills[npills].border[1] = 0.85f; pills[npills].border[2] = 0.40f;
-        pills[npills].fill[0] = 0.05f; pills[npills].fill[1] = 0.30f; pills[npills].fill[2] = 0.10f; pills[npills].fill[3] = 0.30f;
-        int warn_thresh = config_get_int(bar->cfg, "disk_warn_threshold", 90);
-        if (bar->disk_percent >= warn_thresh) {
-            float warn[4];
-            float def_warn[] = {1.0f, 0.6f, 0.0f, 1.0f};
-            if (config_get_color(bar->cfg, "disk_warn_color", warn, def_warn)) {
-                pills[npills].border[0] = warn[0]; pills[npills].border[1] = warn[1]; pills[npills].border[2] = warn[2];
-                pills[npills].fill[0] = warn[0]*0.3f; pills[npills].fill[1] = warn[1]*0.3f; pills[npills].fill[2] = warn[2]*0.3f; pills[npills].fill[3] = 0.3f;
-            }
-        }
-        npills++;
-    }
-    if (config_get_int(bar->cfg, "show_volume", 1)) {
-        const char *ico = config_get(bar->cfg, "volume_icon", "VOL");
-        if (bar->volume_muted)
-            snprintf(pills[npills].label, sizeof(pills[npills].label), "%s MUTED", ico);
-        else
-            snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d%%", ico, bar->volume_percent);
-        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_volume");
-        pills[npills].border[0] = 0.20f; pills[npills].border[1] = 0.60f; pills[npills].border[2] = 1.0f;
-        pills[npills].fill[0] = 0.05f; pills[npills].fill[1] = 0.20f; pills[npills].fill[2] = 0.40f; pills[npills].fill[3] = 0.30f;
-        npills++;
-    }
-    if (config_get_int(bar->cfg, "show_network", 1)) {
-        if (bar->network_ssid[0])
-            snprintf(pills[npills].label, sizeof(pills[npills].label), "%s", bar->network_ssid);
-        else
-            snprintf(pills[npills].label, sizeof(pills[npills].label), "NO NET");
-        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_network");
-        pills[npills].border[0] = 0.20f; pills[npills].border[1] = 0.90f; pills[npills].border[2] = 0.20f;
-        pills[npills].fill[0] = 0.05f; pills[npills].fill[1] = 0.30f; pills[npills].fill[2] = 0.05f; pills[npills].fill[3] = 0.30f;
-        npills++;
-    }
-    if (config_get_int(bar->cfg, "show_battery", 1) && bar->battery_present) {
-        const char *ico = config_get(bar->cfg, "battery_icon", "BAT");
-        if (bar->battery_charging)
-            snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d%%+", ico, bar->battery_percent);
-        else
-            snprintf(pills[npills].label, sizeof(pills[npills].label), "%s %d%%", ico, bar->battery_percent);
-        snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "click_battery");
-        pills[npills].border[0] = 0.90f; pills[npills].border[1] = 0.90f; pills[npills].border[2] = 0.20f;
-        pills[npills].fill[0] = 0.30f; pills[npills].fill[1] = 0.30f; pills[npills].fill[2] = 0.05f; pills[npills].fill[3] = 0.30f;
-        npills++;
-    }
-
-    for (int ci = 0; ci < MAX_CUSTOM_MODULES; ci++) {
+    for (int li = 0; li < bar->n_lua_plugins; li++) {
         char showkey[32];
-        snprintf(showkey, sizeof(showkey), "show_custom_%d", ci + 1);
-        if (!config_get_int(bar->cfg, showkey, 0)) continue;
+        snprintf(showkey, sizeof(showkey), "show_lua_plugin_%d", li + 1);
+        if (!config_get_int(bar->cfg, showkey, 1)) continue;
 
-        if (!bar->custom_modules[ci].output[0]) continue;
+        if (!bar->lua_plugins[li].output[0]) continue;
 
         char prefix[64] = "";
         char prefkey[32];
-        snprintf(prefkey, sizeof(prefkey), "custom_%d_prefix", ci + 1);
+        snprintf(prefkey, sizeof(prefkey), "lua_plugin_%d_prefix", li + 1);
         const char *p = config_get(bar->cfg, prefkey, "");
         if (p[0]) snprintf(prefix, sizeof(prefix), "%s ", p);
 
-        snprintf(pills[npills].label, sizeof(pills[npills].label), "%s%s", prefix, bar->custom_modules[ci].output);
+        snprintf(pills[npills].label, sizeof(pills[npills].label), "%s%s", prefix, bar->lua_plugins[li].output);
 
         char clickkey[32];
-        snprintf(clickkey, sizeof(clickkey), "click_custom_%d", ci + 1);
+        snprintf(clickkey, sizeof(clickkey), "click_lua_plugin_%d", li + 1);
         snprintf(pills[npills].click_key, sizeof(pills[npills].click_key), "%s", clickkey);
 
         char colkey[32];
         float col[4];
-        float def_col[] = {0.5f, 0.5f, 1.0f, 1.0f};
-        snprintf(colkey, sizeof(colkey), "custom_%d_color", ci + 1);
+        float def_col[] = {0.6f, 0.3f, 0.9f, 1.0f};
+        snprintf(colkey, sizeof(colkey), "lua_plugin_%d_color", li + 1);
         if (!config_get_color(bar->cfg, colkey, col, def_col)) {
             col[0] = def_col[0]; col[1] = def_col[1]; col[2] = def_col[2];
         }
@@ -575,32 +500,16 @@ void bar_render(struct bar *bar, cairo_t *cr)
                         snprintf(bar->clickables[bar->n_clickables].command,
                             sizeof(bar->clickables[bar->n_clickables].command), "%s", cmd);
 
-                    const char *tcmd = config_get(bar->cfg, "tooltip_cmd", "");
-                    if (!tcmd[0]) {
-                        const char *tkeys[] = {"cpu", "mem", "updates", "disk", "volume", "network", "battery"};
-                        const char *tcmds[] = {
-                            "ps -eo pid,%%cpu,comm --sort=-%%cpu 2>/dev/null | head -6",
-                            "ps -eo pid,%%mem,comm --sort=-%%mem 2>/dev/null | head -6",
-                            "pacman -Qu 2>/dev/null | head -8 || echo none",
-                            "df -h 2>/dev/null",
-                            "pamixer --get-volume; pamixer --get-mute",
-                            "iw dev 2>/dev/null | awk '/Interface/{print $2}' | head -1 | xargs -r iw dev link 2>/dev/null || nmcli -t dev status 2>/dev/null | head -3",
-                            "cat /sys/class/power_supply/BAT0/uevent 2>/dev/null || echo no battery",
-                        };
-                        int tsz = sizeof(tkeys) / sizeof(tkeys[0]);
-                        for (int ti = 0; ti < tsz && ti < 7; ti++) {
-                            char tk[32];
-                            snprintf(tk, sizeof(tk), "click_%s", tkeys[ti]);
-                            if (strcmp(pills[i].click_key, tk) == 0) {
-                                snprintf(bar->clickables[bar->n_clickables].tooltip_cmd,
-                                    sizeof(bar->clickables[bar->n_clickables].tooltip_cmd), "%s", tcmds[ti]);
-                                break;
-                            }
+                    if (strncmp(pills[i].click_key, "click_lua_plugin_", 17) == 0) {
+                        int idx = atoi(pills[i].click_key + 17) - 1;
+                        if (idx >= 0 && idx < bar->n_lua_plugins) {
+                            const char *tt = lua_plugin_get_tooltip(&bar->lua_plugins[idx]);
+                            if (tt)
+                                snprintf(bar->clickables[bar->n_clickables].tooltip_text,
+                                    sizeof(bar->clickables[bar->n_clickables].tooltip_text), "%s", tt);
                         }
-                    } else {
-                        snprintf(bar->clickables[bar->n_clickables].tooltip_cmd,
-                            sizeof(bar->clickables[bar->n_clickables].tooltip_cmd), "%s", tcmd);
                     }
+
                     bar->n_clickables++;
                 }
 
@@ -688,229 +597,13 @@ void bar_update_workspaces(struct bar *bar)
     pclose(fp);
 }
 
-void bar_update_updates(struct bar *bar)
+void bar_update_lua_plugins(struct bar *bar)
 {
-    time_t now = time(NULL);
-    int interval = config_get_int(bar->cfg, "update_interval", 30);
-    if (now - bar->updates_last_check < interval) return;
-    bar->updates_last_check = now;
-
-    /* Periodically sync remote DB so repo changes are detected */
-    if (access("/usr/bin/pacman", X_OK) == 0 && now - bar->updates_last_sync > 3600) {
-        bar->updates_last_sync = now;
-        if (fork() == 0) {
-            execl("/bin/sh", "sh", "-c",
-                "sudo pacman -Sy --noconfirm 2>/dev/null", (char *)NULL);
-            _exit(1);
-        }
-        return;
-    }
-
-    const char *custom_cmd = config_get(bar->cfg, "update_cmd", "");
-    if (custom_cmd[0]) {
-        char buf[256];
-        snprintf(buf, sizeof(buf), "%s 2>/dev/null | wc -l", custom_cmd);
-        FILE *fp = popen(buf, "r");
-        if (fp) {
-            char line[32];
-            if (fgets(line, sizeof(line), fp))
-                bar->updates_count = atoi(line);
-            pclose(fp);
-        }
-        return;
-    }
-
-    FILE *fp = NULL;
-    if (access("/usr/bin/pacman", X_OK) == 0)
-        fp = popen("pacman -Qu 2>/dev/null | wc -l", "r");
-    else if (access("/usr/bin/dnf", X_OK) == 0)
-        fp = popen("dnf check-update -q 2>/dev/null | wc -l", "r");
-    else if (access("/usr/bin/apt-get", X_OK) == 0)
-        fp = popen("apt list --upgradable 2>/dev/null | grep -c upgradable", "r");
-
-    if (fp) {
-        char line[32];
-        if (fgets(line, sizeof(line), fp))
-            bar->updates_count = atoi(line);
-        pclose(fp);
-    }
-
-    if (bar->updates_count == 0) {
-        bar->updates_auto_notified = false;
-    } else if (config_get_int(bar->cfg, "auto_update", 0) && !bar->updates_auto_notified) {
-        bar->updates_auto_notified = true;
-        const char *cmd = config_get(bar->cfg, "auto_update_cmd", "");
-        if (!cmd[0]) cmd = "wlstatus-update";
-        if (fork() == 0) {
-            setsid();
-            execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-            _exit(1);
-        }
-    }
-}
-
-void bar_update_disk(struct bar *bar)
-{
-    time_t now = time(NULL);
-    int interval = config_get_int(bar->cfg, "disk_interval", 120);
-    if (now - bar->disk_last_check < interval) return;
-    bar->disk_last_check = now;
-
-    const char *path = config_get(bar->cfg, "disk_path", "/");
-    struct statvfs buf;
-    if (statvfs(path, &buf) == 0) {
-        unsigned long total = buf.f_blocks * buf.f_frsize;
-        unsigned long avail = buf.f_bavail * buf.f_frsize;
-        unsigned long used = total - avail;
-        if (total > 0)
-            bar->disk_percent = (int)(100 * used / total);
-    }
-}
-
-void bar_update_system_info(struct bar *bar)
-{
-    FILE *fp = fopen("/proc/stat", "r");
-    if (fp) {
-        char line[256];
-        if (fgets(line, sizeof(line), fp)) {
-            long user, nice, sys, idle, iowait, irq, softirq, steal;
-            sscanf(line, "cpu %ld %ld %ld %ld %ld %ld %ld %ld",
-                   &user, &nice, &sys, &idle, &iowait, &irq, &softirq, &steal);
-            long total = user + nice + sys + idle + iowait + irq + softirq + steal;
-            long dtotal = total - bar->cpu_prev_total;
-            long didle = idle - bar->cpu_prev_idle;
-            if (dtotal > 0)
-                bar->cpu_percent = (int)(100 * (dtotal - didle) / dtotal);
-            bar->cpu_prev_total = total;
-            bar->cpu_prev_idle = idle;
-        }
-        fclose(fp);
-    }
-
-    fp = fopen("/proc/meminfo", "r");
-    if (fp) {
-        char line[256];
-        long total = 0, available = 0;
-        while (fgets(line, sizeof(line), fp)) {
-            if (sscanf(line, "MemTotal: %ld kB", &total) == 1) continue;
-            if (sscanf(line, "MemAvailable: %ld kB", &available) == 1) break;
-        }
-        if (total > 0)
-            bar->mem_percent = (int)(100 * (total - available) / total);
-        fclose(fp);
-    }
-}
-
-void bar_update_volume(struct bar *bar)
-{
-    FILE *fp = popen("pamixer --get-volume 2>/dev/null", "r");
-    if (fp) {
-        char line[16];
-        if (fgets(line, sizeof(line), fp))
-            bar->volume_percent = atoi(line);
-        pclose(fp);
-    }
-    fp = popen("pamixer --get-mute 2>/dev/null", "r");
-    if (fp) {
-        char line[16];
-        if (fgets(line, sizeof(line), fp))
-            bar->volume_muted = (line[0] == 't');
-        pclose(fp);
-    }
-}
-
-void bar_update_network(struct bar *bar)
-{
-    bar->network_ssid[0] = '\0';
-
-    FILE *fp = popen("nmcli -t -f active,ssid dev wifi 2>/dev/null | grep '^yes:' | cut -d: -f2", "r");
-    if (fp) {
-        if (fgets(bar->network_ssid, sizeof(bar->network_ssid), fp)) {
-            char *nl = strchr(bar->network_ssid, '\n');
-            if (nl) *nl = '\0';
-        }
-        pclose(fp);
-        if (bar->network_ssid[0]) return;
-    }
-
-    const char *cfg_iface = config_get(bar->cfg, "network_iface", "");
-    if (cfg_iface[0]) {
-        char cmd[128];
-        snprintf(cmd, sizeof(cmd), "iw dev %s link 2>/dev/null | awk '/SSID/{print $2}'", cfg_iface);
-        FILE *f2 = popen(cmd, "r");
-        if (f2) {
-            if (fgets(bar->network_ssid, sizeof(bar->network_ssid), f2)) {
-                char *nl2 = strchr(bar->network_ssid, '\n');
-                if (nl2) *nl2 = '\0';
-            }
-            pclose(f2);
-        }
-    } else {
-        fp = popen("iw dev 2>/dev/null | awk '/Interface/{print $2}'", "r");
-        if (fp) {
-            char iface[32];
-            while (fgets(iface, sizeof(iface), fp)) {
-                char *nl = strchr(iface, '\n');
-                if (nl) *nl = '\0';
-                if (!iface[0]) continue;
-                char cmd[128];
-                snprintf(cmd, sizeof(cmd), "iw dev %s link 2>/dev/null | awk '/SSID/{print $2}'", iface);
-                FILE *f2 = popen(cmd, "r");
-                if (f2) {
-                    if (fgets(bar->network_ssid, sizeof(bar->network_ssid), f2)) {
-                        char *nl2 = strchr(bar->network_ssid, '\n');
-                        if (nl2) *nl2 = '\0';
-                    }
-                    pclose(f2);
-                    if (bar->network_ssid[0]) break;
-                }
-            }
-            pclose(fp);
-        }
-    }
-}
-
-void bar_update_battery(struct bar *bar)
-{
-    bar->battery_present = false;
-    FILE *fp = fopen("/sys/class/power_supply/BAT0/uevent", "r");
-    if (!fp) return;
-    bar->battery_present = true;
-    char line[256];
-    while (fgets(line, sizeof(line), fp)) {
-        if (sscanf(line, "POWER_SUPPLY_CAPACITY=%d", &bar->battery_percent) == 1)
-            continue;
-        if (strncmp(line, "POWER_SUPPLY_STATUS=Charging", 28) == 0)
-            bar->battery_charging = true;
-        else if (strncmp(line, "POWER_SUPPLY_STATUS=Full", 24) == 0)
-            bar->battery_percent = 100;
-    }
-    fclose(fp);
-}
-
-void bar_update_custom_modules(struct bar *bar)
-{
-    for (int i = 0; i < MAX_CUSTOM_MODULES; i++) {
-        char key[32];
-        snprintf(key, sizeof(key), "custom_%d_cmd", i + 1);
-        const char *cmd = config_get(bar->cfg, key, "");
-        if (!cmd[0]) continue;
-
-        char intkey[32];
-        snprintf(intkey, sizeof(intkey), "custom_%d_interval", i + 1);
-        int interval = config_get_int(bar->cfg, intkey, 60);
-
+    for (int i = 0; i < bar->n_lua_plugins; i++) {
         time_t now = time(NULL);
-        if (now - bar->custom_modules[i].last_check < interval)
+        if (now - bar->lua_plugins[i].last_check < bar->lua_plugins[i].interval)
             continue;
-        bar->custom_modules[i].last_check = now;
-
-        FILE *fp = popen(cmd, "r");
-        if (!fp) continue;
-        if (fgets(bar->custom_modules[i].output, sizeof(bar->custom_modules[i].output), fp)) {
-            char *nl = strchr(bar->custom_modules[i].output, '\n');
-            if (nl) *nl = '\0';
-        }
-        pclose(fp);
+        bar->lua_plugins[i].last_check = now;
+        lua_plugin_tick(&bar->lua_plugins[i]);
     }
 }
