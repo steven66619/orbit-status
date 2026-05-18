@@ -7,12 +7,35 @@ on:
   workflow_dispatch:
 
 jobs:
+  build-void:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Void .xbps package
+        run: |
+          chmod +x mkpkg
+          ./mkpkg void 2>&1 || echo "Void build skipped (non-fatal)"
+
+      - name: Upload Void package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: void-xbps
+          path: repo/void/x86_64/*.xbps
+
   deploy:
+    needs: build-void
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download Void package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: void-xbps
+          path: repo/void/x86_64/
 
       - name: Install repo tools
         run: |

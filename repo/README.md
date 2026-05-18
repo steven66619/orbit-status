@@ -40,13 +40,9 @@ sudo pacman -Sy wlstatus
 
 ```bash
 # Add repo:
-echo 'repository=https://steven66619.github.io/wlstatus-new/void' >> /etc/xbps.d/wlstatus.conf
+echo 'repository=https://steven66619.github.io/wlstatus-new/void' | sudo tee /etc/xbps.d/wlstatus.conf
 
-# Import signing key (optional):
-xbps-install -S ca-certificates && xbps-query -L | grep -q wlstatus || true
-xbps-rindex -r https://steven66619.github.io/wlstatus-new/void
-
-# Install:
+# Sync and install (trust the key when prompted):
 sudo xbps-install -S wlstatus
 ```
 

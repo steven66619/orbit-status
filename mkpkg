@@ -10,6 +10,7 @@ Targets:
   local             Build from source, install to /usr/local
   deb               Build .deb via Docker/Podman (Debian bookworm)
   rpm               Build .rpm via Docker/Podman (Fedora latest)
+  void              Build .xbps via Docker/Podman (Void Linux glibc)
   deb-native        Build .deb using dpkg on Arch
   rpm-native        Build .rpm using rpmbuild on Arch
   personal-arch     Build wlstatus-personal Arch package
@@ -106,6 +107,29 @@ case "$TARGET" in
         cp wlstatus.spec "$HOME/rpmbuild/SPECS/"
         rpmbuild -ba "$HOME/rpmbuild/SPECS/wlstatus.spec"
         echo "==> .rpm written to $HOME/rpmbuild/RPMS/"
+        ;;
+    void)
+        echo "==> Building .xbps via Docker/Podman (Void Linux glibc)"
+        check_runtime
+        $RUNTIME run --rm -v "$PWD:/build:Z" -w /build ghcr.io/void-linux/void-glibc:latest \
+            sh -c "
+                xbps-install -Syu -y &&
+                xbps-install -y base-devel wayland-devel cairo-devel pango-devel \
+                    libxkbcommon-devel lua54-devel &&
+                make clean 2>/dev/null; make PREFIX=/usr &&
+                mkdir -p /tmp/pkgdest &&
+                make install PREFIX=/usr DESTDIR=/tmp/pkgdest &&
+                cd /tmp/pkgdest &&
+                xbps-create -A x86_64 \
+                    -n wlstatus-1.1_2 \
+                    -s 'Lightweight Wayland status bar with Lua plugin support' \
+                    --dependencies 'wayland,cairo,pango,glib2,lua54' \
+                    --homepage 'https://github.com/steven66619/wlstatus-new' \
+                    --license 'MIT' \
+                    usr/ &&
+                mv *.xbps /build/repo/void/x86_64/
+            "
+        echo "==> .xbps written to repo/void/x86_64/"
         ;;
     personal-arch)
         echo "==> Building wlstatus-personal Arch package"
