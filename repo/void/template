@@ -1,0 +1,16 @@
+# Template file for 'wlstatus'
+pkgname=wlstatus
+version=1.1
+revision=2
+archs="x86_64 aarch64"
+build_style=gnu-makefile
+make_build_args="PREFIX=/usr"
+make_install_args="PREFIX=/usr DESTDIR=${DESTDIR}"
+hostmakedepends="pkg-config wayland-protocols"
+makedepends="wayland-devel cairo-devel pango-devel libxkbcommon-devel lua54-devel"
+short_desc="Lightweight Wayland status bar with Lua plugin support"
+maintainer="steven66619 <ste@example.com>"
+license="MIT"
+homepage="https://github.com/steven66619/wlstatus-new"
+distfiles="${homepage}/archive/v${version}.tar.gz"
+checksum=SKIP

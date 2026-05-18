@@ -138,6 +138,12 @@ static void render(struct wl_status *ws)
     wl_surface_attach(ws->surface, ws->buffer, 0, 0);
     wl_surface_damage_buffer(ws->surface, 0, 0, ws->width, ws->height);
     wl_surface_commit(ws->surface);
+
+    if (ws->popup.visible && ws->popup.buffer && ws->popup.surface) {
+        wl_surface_attach(ws->popup.surface, ws->popup.buffer, 0, 0);
+        wl_surface_damage_buffer(ws->popup.surface, 0, 0, ws->popup.width, ws->popup.height);
+        wl_surface_commit(ws->popup.surface);
+    }
 }
 
 static int popup_create_buffer(struct wl_status *ws)
@@ -338,6 +344,7 @@ static void popup_create(struct wl_status *ws, int action)
 
     ws->popup.visible = true;
     wl_surface_commit(ws->popup.surface);
+    wl_display_roundtrip(ws->display);
 }
 
 static void tooltip_destroy(struct wl_status *ws)
@@ -699,9 +706,10 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
     if (state != 1) return;
     if (button != 0x110) return;
 
+    int x = ws->pointer_x, y = ws->pointer_y;
+
     if (ws->popup.visible) {
         if (ws->current_pointer_surface == ws->popup.surface) {
-            int x = ws->pointer_x, y = ws->pointer_y;
             if (x >= ws->popup.confirm_btn_x && x < ws->popup.confirm_btn_x + ws->popup.confirm_btn_w &&
                 y >= ws->popup.confirm_btn_y && y < ws->popup.confirm_btn_y + ws->popup.confirm_btn_h) {
                 const char *cmds[] = {"systemctl poweroff", "systemctl reboot", "systemctl suspend"};
@@ -716,28 +724,31 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
             }
         } else {
             popup_destroy(ws);
-            return;
         }
     }
 
-    enum click_action action = bar_handle_click(ws->bar,
-        ws->pointer_x, ws->pointer_y);
-
-    if (action == CLICK_POWEROFF || action == CLICK_REBOOT || action == CLICK_SUSPEND) {
-        int a = (action == CLICK_POWEROFF) ? 0 : (action == CLICK_REBOOT) ? 1 : 2;
-        popup_create(ws, a);
-        return;
-    }
-
-    if (action == CLICK_HYPRCTL || action == CLICK_RUN) {
-        for (int i = 0; i < ws->bar->n_clickables; i++) {
-            struct clickable *c = &ws->bar->clickables[i];
-            if (c->action == action &&
-                ws->pointer_x >= c->x && ws->pointer_x < c->x + c->w &&
-                ws->pointer_y >= c->y && ws->pointer_y < c->y + c->h) {
+    for (int i = 0; i < ws->bar->n_clickables; i++) {
+        struct clickable *c = &ws->bar->clickables[i];
+        if (x >= c->x && x < c->x + c->w &&
+            y >= c->y && y < c->y + c->h) {
+            switch (c->action) {
+            case CLICK_POWEROFF:
+                popup_create(ws, 0);
+                break;
+            case CLICK_REBOOT:
+                popup_create(ws, 1);
+                break;
+            case CLICK_SUSPEND:
+                popup_create(ws, 2);
+                break;
+            case CLICK_HYPRCTL:
+            case CLICK_RUN:
                 execute_command(c->command);
                 break;
+            default:
+                break;
             }
+            break;
         }
     }
 }

@@ -19,10 +19,21 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq dpkg-dev apt-utils createrepo-c
 
+      - name: Import GPG signing key
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --import --batch 2>/dev/null
+          echo "${{ secrets.GPG_PASSPHRASE }}" | gpg --batch --yes --passphrase-fd 0 --list-secret-keys 2>/dev/null || true
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+
       - name: Regenerate repo metadata
         run: |
           chmod +x repo/update-repo.sh
-          ./repo/update-repo.sh all
+          GPG_KEY="${GPG_KEY:-steven4x4@gmail.com}" ./repo/update-repo.sh all
+        env:
+          GPG_KEY: ${{ secrets.GPG_KEY }}
 
       - uses: peaceiris/actions-gh-pages@v3
         with:

@@ -14,9 +14,18 @@ function tick()
 end
 
 function on_tooltip()
-    local f = io.popen("df -h 2>/dev/null", "r")
+    local f = io.popen("df -h " .. path .. " 2>/dev/null | tail -1", "r")
     if not f then return "" end
-    local r = f:read("*a")
+    local line = f:read()
     f:close()
-    return r
+    if not line then return "" end
+    local parts = {}
+    for v in line:gmatch("%S+") do table.insert(parts, v) end
+    if #parts >= 6 then
+        return "Filesystem: " .. parts[1] .. "\nSize: " .. parts[2] ..
+               "\nUsed: " .. parts[3] .. " (" .. parts[5] .. ")" ..
+               "\nFree: " .. parts[4] ..
+               "\nMounted: " .. parts[6]
+    end
+    return line
 end

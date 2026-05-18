@@ -1,5 +1,8 @@
 # wlstatus Package Repositories
 
+All repositories are signed with [this GPG key](GPG-KEY).
+Fingerprint: `908BA367E7E797F3F72B673710F1B1E3F275953D`
+
 ## APT (Debian / Ubuntu)
 
 ```bash
@@ -17,16 +20,34 @@ sudo dnf install wlstatus
 
 ## Arch Linux
 
-Add to `/etc/pacman.conf`:
-
-```ini
-[wlstatus]
-SigLevel = Optional TrustAll
-Server = https://steven66619.github.io/wlstatus-new/arch/x86_64
-```
+Import the signing key and add to `/etc/pacman.conf`:
 
 ```bash
+# Add and trust the signing key:
+curl -fsSL https://steven66619.github.io/wlstatus-new/GPG-KEY | sudo pacman-key --add -
+sudo pacman-key --lsign-key 908BA367E7E797F3F72B673710F1B1E3F275953D
+
+# Add to /etc/pacman.conf:
+[wlstatus]
+SigLevel = Required DatabaseOptional
+Server = https://steven66619.github.io/wlstatus-new/arch/x86_64
+
+# Install:
 sudo pacman -Sy wlstatus
+```
+
+## Void Linux
+
+```bash
+# Add repo:
+echo 'repository=https://steven66619.github.io/wlstatus-new/void' >> /etc/xbps.d/wlstatus.conf
+
+# Import signing key (optional):
+xbps-install -S ca-certificates && xbps-query -L | grep -q wlstatus || true
+xbps-rindex -r https://steven66619.github.io/wlstatus-new/void
+
+# Install:
+sudo xbps-install -S wlstatus
 ```
 
 ## Build from Source

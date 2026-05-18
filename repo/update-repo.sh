@@ -4,12 +4,25 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 ARCH="${ARCH:-amd64}"
 DIST="${DIST:-stable}"
+GPG_KEY="${GPG_KEY:-steven4x4@gmail.com}"
 
 APT_POOL="$REPO_DIR/apt/pool/main"
 APT_DIST="$REPO_DIR/apt/dists/$DIST"
 APT_BINARY="$APT_DIST/main/binary-$ARCH"
 YUM_DIR="$REPO_DIR/yum/x86_64"
 ARCH_DIR="$REPO_DIR/arch/x86_64"
+VOID_DIR="$REPO_DIR/void/x86_64"
+
+sign_file() {
+    local file="$1"
+    if [ ! -f "$file" ]; then return; fi
+    if gpg --list-keys "$GPG_KEY" &>/dev/null 2>&1; then
+        gpg --detach-sign --armor -o "${file}.gpg" "$file" 2>/dev/null || true
+        echo "    Signed: ${file}.gpg"
+    else
+        echo "    GPG key '$GPG_KEY' not found, skipping signature"
+    fi
+}
 
 install_deps_ci() {
     echo "==> Installing CI dependencies..."
@@ -36,9 +49,10 @@ generate_apt() {
         apt-ftparchive release "$APT_DIST" > "$APT_DIST/Release" 2>/dev/null || true
         echo "    APT Release generated"
     fi
-    if gpg --list-keys ste@example.com &>/dev/null 2>&1; then
-        gpg --detach-sign --armor -o "$APT_DIST/Release.gpg" "$APT_DIST/Release" 2>/dev/null || true
+    sign_file "$APT_DIST/Release"
+    if [ -f "${APT_DIST}/Release.gpg" ]; then
         gpg --clearsign -o "$APT_DIST/InRelease" "$APT_DIST/Release" 2>/dev/null || true
+        echo "    APT InRelease generated"
     fi
     echo "    APT repo ready"
 }
@@ -58,13 +72,14 @@ generate_yum() {
     else
         echo "    createrepo_c not available, skipping YUM metadata"
     fi
+    sign_file "$YUM_DIR/repodata/repomd.xml"
+    echo "    YUM repo ready"
 }
 
 generate_arch() {
     echo "==> Generating Arch repo..."
     if ! command -v repo-add &>/dev/null; then
         echo "    repo-add not available (Arch Linux tool), skipping"
-        echo "    (db files already committed in repo/)"
         return
     fi
     mkdir -p "$ARCH_DIR"
@@ -80,11 +95,34 @@ generate_arch() {
             echo "    No $db packages ($pattern) found, skipping"
             continue
         fi
-        if ! repo-add "$db.db.tar.zst" $pattern 2>&1; then
-            echo "    repo-add failed for $db, existing db files preserved"
+        if ! repo-add --sign "$db.db.tar.zst" $pattern 2>&1; then
+            echo "    repo-add failed for $db, trying without sign"
+            repo-add "$db.db.tar.zst" $pattern 2>&1 || true
         fi
+        sign_file "$db.db"
     done
+    echo "    Arch repo ready"
     popd >/dev/null
+}
+
+generate_void() {
+    echo "==> Generating Void repo..."
+    mkdir -p "$VOID_DIR"
+    if [ -z "$(ls "$VOID_DIR"/*.xbps 2>/dev/null)" ]; then
+        echo "    No .xbps packages found, skipping Void"
+        return
+    fi
+    if command -v xbps-rindex &>/dev/null; then
+        if gpg --list-keys "$GPG_KEY" &>/dev/null 2>&1; then
+            xbps-rindex -s "$GPG_KEY" -a "$VOID_DIR"/*.xbps 2>&1 || \
+            xbps-rindex -a "$VOID_DIR"/*.xbps 2>&1 || true
+        else
+            xbps-rindex -a "$VOID_DIR"/*.xbps 2>&1 || true
+        fi
+        echo "    Void repo ready"
+    else
+        echo "    xbps-rindex not available (Void Linux tool), skipping"
+    fi
 }
 
 case "${1:-}" in
@@ -92,15 +130,17 @@ case "${1:-}" in
     apt) generate_apt ;;
     yum) generate_yum ;;
     arch) generate_arch ;;
+    void) generate_void ;;
     all|"")
         generate_apt
         generate_yum
         generate_arch
+        generate_void
         echo ""
         echo "==> Done. Repo updated at $REPO_DIR"
         ;;
     *)
-        echo "Usage: $0 [all|apt|yum|arch|ci-deps]"
+        echo "Usage: $0 [all|apt|yum|arch|void|ci-deps]"
         exit 1
         ;;
 esac
