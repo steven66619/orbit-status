@@ -1,0 +1,32 @@
+name: Deploy package repo to GitHub Pages
+
+on:
+  push:
+    branches: [main, personal]
+    paths: ['repo/**']
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install repo tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dpkg-dev apt-utils createrepo-c
+
+      - name: Regenerate repo metadata
+        run: |
+          chmod +x repo/update-repo.sh
+          ./repo/update-repo.sh all
+
+      - uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./repo
+          destination_dir: ./
+          keep_files: false

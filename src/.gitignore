@@ -1,0 +1,9 @@
+*.o
+wlstatus
+wlr-layer-shell-unstable-v1-client.c
+wlr-layer-shell-unstable-v1-client.h
+xdg-shell-client.c
+xdg-shell-client.h
+debian/files
+debian/substvars
+debian-build
