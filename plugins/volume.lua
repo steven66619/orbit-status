@@ -37,6 +37,19 @@ function tick()
     return "--"
 end
 
+function on_click()
+    os.execute("pamixer --toggle-mute 2>/dev/null || wpctl set-volume @DEFAULT_AUDIO_SINK@ 0% 2>/dev/null")
+end
+
+function on_scroll(direction)
+    local step = 5
+    if direction > 0 then
+        os.execute("pamixer --increase " .. step .. " 2>/dev/null || wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ 2>/dev/null")
+    else
+        os.execute("pamixer --decrease " .. step .. " 2>/dev/null || wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- 2>/dev/null")
+    end
+end
+
 function on_tooltip()
     local f = io.popen("pamixer --get-volume 2>/dev/null && pamixer --get-mute 2>/dev/null || wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null || echo no audio backend", "r")
     if not f then return "" end

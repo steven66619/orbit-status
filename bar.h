@@ -27,6 +27,7 @@ struct clickable {
     char command[256];
     char tooltip_cmd[128];
     char tooltip_text[512];
+    int lua_plugin_idx;
 };
 
 struct workspace {

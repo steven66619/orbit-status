@@ -756,6 +756,24 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
 static void pointer_axis(void *data, struct wl_pointer *pointer,
     uint32_t time, uint32_t axis, wl_fixed_t value)
 {
+    struct wl_status *ws = data;
+    if (axis != 0) return;
+
+    int x = ws->pointer_x, y = ws->pointer_y;
+    for (int i = 0; i < ws->bar->n_clickables; i++) {
+        struct clickable *c = &ws->bar->clickables[i];
+        if (x >= c->x && x < c->x + c->w &&
+            y >= c->y && y < c->y + c->h) {
+            if (c->lua_plugin_idx >= 0) {
+                int direction = (value > 0) ? -1 : 1;
+                lua_plugin_call_onscroll(
+                    &ws->bar->lua_plugins[c->lua_plugin_idx], direction);
+                bar_update_lua_plugins(ws->bar);
+                render(ws);
+            }
+            break;
+        }
+    }
 }
 
 static void pointer_frame(void *data, struct wl_pointer *pointer) {}

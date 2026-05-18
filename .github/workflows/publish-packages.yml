@@ -21,7 +21,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: void-xbps
-          path: repo/void/x86_64/*.xbps
+          path: repo/void/x86_64/
 
   deploy:
     needs: build-void
@@ -54,7 +54,15 @@ jobs:
       - name: Regenerate repo metadata
         run: |
           chmod +x repo/update-repo.sh
-          GPG_KEY="${GPG_KEY:-steven4x4@gmail.com}" ./repo/update-repo.sh all
+          GPG_KEY="${GPG_KEY:-steven4x4@gmail.com}" ./repo/update-repo.sh apt
+          GPG_KEY="${GPG_KEY:-steven4x4@gmail.com}" ./repo/update-repo.sh yum
+          GPG_KEY="${GPG_KEY:-steven4x4@gmail.com}" ./repo/update-repo.sh arch
+          # Sign Void repodata manually (xbps-rindex only on Void)
+          void_repodata=$(ls repo/void/x86_64/*-repodata 2>/dev/null | head -1)
+          if [ -n "$void_repodata" ] && gpg --list-keys "$GPG_KEY" &>/dev/null 2>&1; then
+            gpg --detach-sign -o "${void_repodata}.sig" "$void_repodata" 2>/dev/null
+            echo "Void repodata signed: ${void_repodata}.sig"
+          fi
         env:
           GPG_KEY: ${{ secrets.GPG_KEY }}
 

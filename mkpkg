@@ -114,7 +114,7 @@ case "$TARGET" in
         $RUNTIME run --rm -v "$PWD:/build:Z" -w /build ghcr.io/void-linux/void-glibc:latest \
             sh -c "
                 xbps-install -Syu -y &&
-                xbps-install -y base-devel wayland-devel cairo-devel pango-devel \
+                xbps-install -y base-devel wayland-devel wayland-protocols cairo-devel pango-devel \
                     libxkbcommon-devel lua54-devel &&
                 make clean 2>/dev/null; make PREFIX=/usr &&
                 mkdir -p /tmp/pkgdest &&
@@ -127,7 +127,8 @@ case "$TARGET" in
                     --homepage 'https://github.com/steven66619/wlstatus-new' \
                     --license 'MIT' \
                     usr/ &&
-                mv *.xbps /build/repo/void/x86_64/
+                mv *.xbps /build/repo/void/x86_64/ &&
+                xbps-rindex -a /build/repo/void/x86_64/*.xbps
             "
         echo "==> .xbps written to repo/void/x86_64/"
         ;;

@@ -28,13 +28,21 @@ struct bar *bar_create(int width, int height, struct config *cfg)
 
     bar->n_lua_plugins = 0;
     for (int i = 0; i < MAX_LUA_PLUGINS; i++) {
-        char key[32];
-        snprintf(key, sizeof(key), "lua_plugin_%d_path", i + 1);
-        const char *path = config_get(cfg, key, "");
-        if (!path[0]) continue;
+        char cmdkey[32], pathkey[32], ikey[32];
+        snprintf(cmdkey, sizeof(cmdkey), "lua_plugin_%d_cmd", i + 1);
+        snprintf(pathkey, sizeof(pathkey), "lua_plugin_%d_path", i + 1);
+        snprintf(ikey, sizeof(ikey), "lua_plugin_%d_interval", i + 1);
+        const char *cmd = config_get(cfg, cmdkey, "");
+        const char *path = config_get(cfg, pathkey, "");
 
-        if (lua_plugin_init(&bar->lua_plugins[bar->n_lua_plugins], path) == 0)
-            bar->n_lua_plugins++;
+        if (cmd[0]) {
+            int interval = config_get_int(cfg, ikey, 5);
+            if (lua_plugin_init_shell(&bar->lua_plugins[bar->n_lua_plugins], cmd, interval) == 0)
+                bar->n_lua_plugins++;
+        } else if (path[0]) {
+            if (lua_plugin_init(&bar->lua_plugins[bar->n_lua_plugins], path) == 0)
+                bar->n_lua_plugins++;
+        }
     }
 
     return bar;
@@ -172,6 +180,7 @@ static void draw_power_buttons(struct bar *bar, cairo_t *cr, int h)
             bar->clickables[bar->n_clickables++] = (struct clickable){
                 .x = x, .y = btn_y, .w = btn_size, .h = btn_size,
                 .action = actions[i],
+                .lua_plugin_idx = -1,
             };
         }
 
@@ -329,6 +338,7 @@ static void draw_workspaces(struct bar *bar, cairo_t *cr, int h, int x)
             cl->w = btn_w;
             cl->h = btn_h;
             cl->action = CLICK_HYPRCTL;
+            cl->lua_plugin_idx = -1;
             snprintf(cl->command, sizeof(cl->command),
                 "hyprctl dispatch workspace %d", id);
         }
@@ -367,9 +377,15 @@ void bar_render(struct bar *bar, cairo_t *cr)
     int tw = 0, th = 0;
     int show_clock = config_get_int(bar->cfg, "show_clock", 1);
 
+    const char *font_family = config_get(bar->cfg, "font_family", "Sans");
+    int clock_font_size = config_get_int(bar->cfg, "clock_font_size", 11);
+    int pill_font_size = config_get_int(bar->cfg, "pill_font_size", 9);
+
     if (show_clock) {
+        char desc[64];
+        snprintf(desc, sizeof(desc), "%s %d", font_family, clock_font_size);
         PangoLayout *lay = pango_cairo_create_layout(cr);
-        PangoFontDescription *fd = pango_font_description_from_string("Sans 11");
+        PangoFontDescription *fd = pango_font_description_from_string(desc);
         pango_layout_set_font_description(lay, fd);
         pango_font_description_free(fd);
         time_t t = time(NULL);
@@ -381,7 +397,8 @@ void bar_render(struct bar *bar, cairo_t *cr)
         g_object_unref(lay);
     }
 
-    struct {
+    struct pill {
+        int plugin_idx;
         char label[64];
         char click_key[32];
         int w, h;
@@ -416,9 +433,28 @@ void bar_render(struct bar *bar, cairo_t *cr)
         if (!config_get_color(bar->cfg, colkey, col, def_col)) {
             col[0] = def_col[0]; col[1] = def_col[1]; col[2] = def_col[2];
         }
+        pills[npills].plugin_idx = li;
         pills[npills].border[0] = col[0]; pills[npills].border[1] = col[1]; pills[npills].border[2] = col[2];
         pills[npills].fill[0] = col[0]*0.3f; pills[npills].fill[1] = col[1]*0.3f; pills[npills].fill[2] = col[2]*0.3f; pills[npills].fill[3] = 0.3f;
         npills++;
+    }
+
+    const char *order_str = config_get(bar->cfg, "pill_order", "");
+    if (order_str[0]) {
+        int order[16], norder = 0;
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "%s", order_str);
+        for (char *tok = strtok(tmp, ","); tok && norder < 16; tok = strtok(NULL, ",")) {
+            int idx = atoi(tok) - 1;
+            if (idx >= 0 && idx < npills) order[norder++] = idx;
+        }
+        if (norder > 0) {
+            struct pill sorted[16];
+            for (int i = 0; i < norder && i < 16; i++)
+                sorted[i] = pills[order[i]];
+            memcpy(pills, sorted, sizeof(pills[0]) * (norder < 16 ? norder : 16));
+            npills = norder < 16 ? norder : 16;
+        }
     }
 
     if (show_clock || npills > 0) {
@@ -427,7 +463,9 @@ void bar_render(struct bar *bar, cairo_t *cr)
         int pill_gap = config_get_int(bar->cfg, "pill_gap", 6);
         int clock_pad = (show_clock && npills > 0) ? 14 : 0;
 
-        PangoFontDescription *fd_s = pango_font_description_from_string("Sans Bold 9");
+        char pill_desc[64];
+        snprintf(pill_desc, sizeof(pill_desc), "%s Bold %d", font_family, pill_font_size);
+        PangoFontDescription *fd_s = pango_font_description_from_string(pill_desc);
         PangoLayout *l = pango_cairo_create_layout(cr);
         pango_layout_set_font_description(l, fd_s);
 
@@ -454,7 +492,9 @@ void bar_render(struct bar *bar, cairo_t *cr)
             cairo_set_source_rgb(cr, acc[0], acc[1], acc[2]);
             cairo_move_to(cr, clock_x, (bar->height - th) / 2.0 + 1);
             PangoLayout *lay = pango_cairo_create_layout(cr);
-            PangoFontDescription *fd = pango_font_description_from_string("Sans 11");
+            char clock_desc[64];
+            snprintf(clock_desc, sizeof(clock_desc), "%s %d", font_family, clock_font_size);
+            PangoFontDescription *fd = pango_font_description_from_string(clock_desc);
             pango_layout_set_font_description(lay, fd);
             pango_font_description_free(fd);
             time_t t = time(NULL);
@@ -495,6 +535,7 @@ void bar_render(struct bar *bar, cairo_t *cr)
                         .x = pill_x, .y = pill_y,
                         .w = pw + pill_pad_w * 2, .h = pill_h,
                         .action = cmd[0] ? CLICK_RUN : CLICK_NONE,
+                        .lua_plugin_idx = -1,
                     };
                     if (cmd[0])
                         snprintf(bar->clickables[bar->n_clickables].command,
@@ -503,6 +544,7 @@ void bar_render(struct bar *bar, cairo_t *cr)
                     if (strncmp(pills[i].click_key, "click_lua_plugin_", 17) == 0) {
                         int idx = atoi(pills[i].click_key + 17) - 1;
                         if (idx >= 0 && idx < bar->n_lua_plugins) {
+                            bar->clickables[bar->n_clickables].lua_plugin_idx = idx;
                             const char *tt = lua_plugin_get_tooltip(&bar->lua_plugins[idx]);
                             if (tt)
                                 snprintf(bar->clickables[bar->n_clickables].tooltip_text,
