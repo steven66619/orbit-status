@@ -1,12 +1,11 @@
 PREFIX ?= /usr/local
-CFLAGS ?= -O2 -pipe
+CXXFLAGS ?= -O2 -pipe
 
 WAYLAND_SCANNER := $(shell pkg-config --variable=wayland_scanner wayland-scanner)
 PROTOCOLS_DIR := /usr/share/wayland-protocols
 
-CFLAGS += $(shell pkg-config --cflags wayland-client cairo pangocairo xkbcommon lua5.4) \
-	-std=c99 -Wall -Wextra -D_POSIX_C_SOURCE=200809L \
-	-Wno-unused-parameter
+CXXFLAGS += $(shell pkg-config --cflags wayland-client cairo pangocairo xkbcommon lua5.4) \
+	-std=c++20 -Wall -Wextra -Wno-unused-parameter
 LDLIBS = $(shell pkg-config --libs wayland-client cairo pangocairo xkbcommon lua5.4) -lm
 
 WLROOT := wlr-layer-shell-unstable-v1
@@ -18,11 +17,11 @@ XDGXML := $(PROTOCOLS_DIR)/stable/xdg-shell/xdg-shell.xml
 XDGHDR := $(XDG)-client.h
 XDGCOD := $(XDG)-client.c
 
-OBJS := main.o bar.o config.o lua_plugin.o $(WLCODE:.c=.o) $(XDGCOD:.c=.o)
+OBJS := main.o bar.o lua_plugin.o $(WLCODE:.c=.o) $(XDGCOD:.c=.o)
 PLUGINS_DIR := $(DESTDIR)$(PREFIX)/share/wlstatus/plugins
 
 wlstatus: $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJS) $(LDLIBS)
 
 $(WLHEADER): $(WLROOT).xml
 	$(WAYLAND_SCANNER) client-header < $< > $@
@@ -36,13 +35,11 @@ $(XDGHDR): $(XDGXML)
 $(XDGCOD): $(XDGXML)
 	$(WAYLAND_SCANNER) private-code < $< > $@
 
-main.o: main.c bar.h config.h $(WLHEADER)
-bar.o: bar.c bar.h config.h $(WLHEADER)
-config.o: config.c config.h
-lua_plugin.o: lua_plugin.c lua_plugin.h
+%.o: %.cpp bar.hpp config.hpp lua_plugin.hpp $(WLHEADER)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 %.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) -c -o $@ $<
 
 clean:
 	rm -f wlstatus *.o $(WLHEADER) $(WLCODE) $(XDGHDR) $(XDGCOD)

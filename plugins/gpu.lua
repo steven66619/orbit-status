@@ -26,7 +26,7 @@ function tick()
             end
         end
     end
-    local rf = io.popen("radeontop -d - 2>/dev/null | tail -1", "r")
+    local rf = io.popen("timeout 1 radeontop -d - 2>/dev/null | tail -1", "r")
     if rf then
         local line = rf:read()
         rf:close()
@@ -52,7 +52,7 @@ function on_tooltip()
     local nf = io.popen("nvidia-smi 2>/dev/null | head -10", "r")
     if nf then r = nf:read("*a"); nf:close() end
     if r ~= "" then return r end
-    local rf = io.popen("radeontop -d - 2>/dev/null | tail -1", "r")
+    local rf = io.popen("timeout 1 radeontop -d - 2>/dev/null | tail -1", "r")
     if rf then r = rf:read("*a"); rf:close() end
     if r ~= "" then return r end
     return "no GPU info"

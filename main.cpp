@@ -1,138 +1,136 @@
-#define _GNU_SOURCE
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
-#include <time.h>
+#include <ctime>
 #include <wayland-client.h>
 #include <poll.h>
 #include <sys/timerfd.h>
 #include <sys/inotify.h>
-#include <signal.h>
-#include <errno.h>
-#include <ctype.h>
+#include <csignal>
+#include <cerrno>
+#include <cctype>
+#ifdef __cplusplus
+#define namespace namespace_
+#endif
 #include "wlr-layer-shell-unstable-v1-client.h"
+#ifdef __cplusplus
+#undef namespace
+#endif
 #include <cairo.h>
 #include <pango/pangocairo.h>
 #include <xkbcommon/xkbcommon.h>
-#include "bar.h"
-#include "config.h"
+#include "bar.hpp"
+#include "config.hpp"
 
-void config_destroy(struct config *cfg);
+struct WlStatus {
+    wl_display *display = nullptr;
+    wl_compositor *compositor = nullptr;
+    wl_shm *shm = nullptr;
+    zwlr_layer_shell_v1 *layer_shell = nullptr;
+    zwlr_layer_surface_v1 *layer_surface = nullptr;
+    wl_surface *surface = nullptr;
+    wl_seat *seat = nullptr;
+    wl_pointer *pointer = nullptr;
+    wl_keyboard *keyboard = nullptr;
+    xkb_context *xkb_ctx = nullptr;
+    struct xkb_keymap *xkb_kmap = nullptr;
+    struct xkb_state *xkb_kstate = nullptr;
 
-struct wl_status {
-    struct wl_display *display;
-    struct wl_compositor *compositor;
-    struct wl_shm *shm;
-    struct zwlr_layer_shell_v1 *layer_shell;
-    struct zwlr_layer_surface_v1 *layer_surface;
-    struct wl_surface *surface;
-    struct wl_seat *seat;
-    struct wl_pointer *pointer;
-    struct wl_keyboard *keyboard;
-    struct xkb_context *xkb_ctx;
-    struct xkb_keymap *xkb_keymap;
-    struct xkb_state *xkb_state;
+    wl_buffer *buffer = nullptr;
+    cairo_surface_t *cairo_surface = nullptr;
+    cairo_t *cr = nullptr;
+    void *shm_data = nullptr;
+    int width = 0, height = 0;
 
-    struct wl_buffer *buffer;
-    cairo_surface_t *cairo_surface;
-    cairo_t *cr;
-    void *shm_data;
-    int width, height;
+    Bar *bar = nullptr;
+    Config *cfg = nullptr;
+    bool configured = false;
+    bool running = false;
+    uint32_t configure_serial = 0;
+    int pointer_x = 0, pointer_y = 0;
+    wl_surface *current_pointer_surface = nullptr;
 
-    struct bar *bar;
-    struct config *cfg;
-    bool configured;
-    bool running;
-    uint32_t configure_serial;
-    int pointer_x, pointer_y;
-    struct wl_surface *current_pointer_surface;
-
-    int timer_fd;
-
-        int inotify_fd;
+    int timer_fd = -1;
+    int inotify_fd = -1;
 
     struct {
-        struct wl_surface *surface;
-        struct zwlr_layer_surface_v1 *layer_surface;
-        struct wl_buffer *buffer;
-        cairo_surface_t *cairo_surface;
-        cairo_t *cr;
-        void *shm_data;
-        int width, height;
-        bool visible, configured;
-        char text[512];
-        int hovered_clickable;
-        int hover_x, hover_y;
+        wl_surface *surface = nullptr;
+        zwlr_layer_surface_v1 *layer_surface = nullptr;
+        wl_buffer *buffer = nullptr;
+        cairo_surface_t *cairo_surface = nullptr;
+        cairo_t *cr = nullptr;
+        void *shm_data = nullptr;
+        int width = 0, height = 0;
+        bool visible = false, configured = false;
+        char text[512]{};
+        int hovered_clickable = -1;
+        int hover_x = 0, hover_y = 0;
     } tooltip;
 
     struct {
-        struct wl_surface *surface;
-        struct zwlr_layer_surface_v1 *layer_surface;
-        struct wl_buffer *buffer;
-        cairo_surface_t *cairo_surface;
-        cairo_t *cr;
-        void *shm_data;
-        int width, height;
-        bool visible, configured;
-        int action;
-        int hovered_btn;
-        int confirm_btn_x, confirm_btn_y, confirm_btn_w, confirm_btn_h;
-        int cancel_btn_x, cancel_btn_y, cancel_btn_w, cancel_btn_h;
+        wl_surface *surface = nullptr;
+        zwlr_layer_surface_v1 *layer_surface = nullptr;
+        wl_buffer *buffer = nullptr;
+        cairo_surface_t *cairo_surface = nullptr;
+        cairo_t *cr = nullptr;
+        void *shm_data = nullptr;
+        int width = 0, height = 0;
+        bool visible = false, configured = false;
+        int action = 0;
+        int hovered_btn = -1;
+        int confirm_btn_x = 0, confirm_btn_y = 0, confirm_btn_w = 0, confirm_btn_h = 0;
+        int cancel_btn_x = 0, cancel_btn_y = 0, cancel_btn_w = 0, cancel_btn_h = 0;
     } popup;
 };
 
-static int create_shm_fd(size_t size)
-{
+static int create_shm_fd(size_t size) {
     int fd = memfd_create("wlstatus", MFD_CLOEXEC);
     if (fd < 0) return -1;
     if (ftruncate(fd, (off_t)size) < 0) { close(fd); return -1; }
     return fd;
 }
 
-static int create_buffer(struct wl_status *ws)
-{
+static int create_buffer(WlStatus *ws) {
     if (ws->buffer) return 0;
     int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->width);
     int size = stride * ws->height;
     int fd = create_shm_fd(size);
     if (fd < 0) return -1;
 
-    struct wl_shm_pool *pool = wl_shm_create_pool(ws->shm, fd, size);
+    wl_shm_pool *pool = wl_shm_create_pool(ws->shm, fd, size);
     ws->buffer = wl_shm_pool_create_buffer(pool, 0, ws->width, ws->height,
         stride, WL_SHM_FORMAT_ARGB8888);
     wl_shm_pool_destroy(pool);
 
-    ws->shm_data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    ws->shm_data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
     if (ws->shm_data == MAP_FAILED) return -1;
 
     ws->cairo_surface = cairo_image_surface_create_for_data(
-        ws->shm_data, CAIRO_FORMAT_ARGB32, ws->width, ws->height, stride);
+        (unsigned char *)ws->shm_data, CAIRO_FORMAT_ARGB32, ws->width, ws->height, stride);
     ws->cr = cairo_create(ws->cairo_surface);
     return 0;
 }
 
-static void destroy_buffer(struct wl_status *ws)
-{
+static void destroy_buffer(WlStatus *ws) {
     if (ws->cr) cairo_destroy(ws->cr);
-    ws->cr = NULL;
+    ws->cr = nullptr;
     if (ws->cairo_surface) cairo_surface_destroy(ws->cairo_surface);
-    ws->cairo_surface = NULL;
+    ws->cairo_surface = nullptr;
     if (ws->shm_data) {
         int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->width);
         munmap(ws->shm_data, stride * ws->height);
     }
-    ws->shm_data = NULL;
+    ws->shm_data = nullptr;
     if (ws->buffer) wl_buffer_destroy(ws->buffer);
-    ws->buffer = NULL;
+    ws->buffer = nullptr;
 }
 
-static void render(struct wl_status *ws)
-{
+static void render(WlStatus *ws) {
     bar_render(ws->bar, ws->cr);
     cairo_surface_flush(ws->cairo_surface);
     wl_surface_attach(ws->surface, ws->buffer, 0, 0);
@@ -146,46 +144,44 @@ static void render(struct wl_status *ws)
     }
 }
 
-static int popup_create_buffer(struct wl_status *ws)
-{
+static int popup_create_buffer(WlStatus *ws) {
     if (ws->popup.buffer) return 0;
     int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->popup.width);
     int size = stride * ws->popup.height;
     int fd = create_shm_fd(size);
     if (fd < 0) return -1;
 
-    struct wl_shm_pool *pool = wl_shm_create_pool(ws->shm, fd, size);
+    wl_shm_pool *pool = wl_shm_create_pool(ws->shm, fd, size);
     ws->popup.buffer = wl_shm_pool_create_buffer(pool, 0,
         ws->popup.width, ws->popup.height, stride, WL_SHM_FORMAT_ARGB8888);
     wl_shm_pool_destroy(pool);
 
-    ws->popup.shm_data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    ws->popup.shm_data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
     if (ws->popup.shm_data == MAP_FAILED) return -1;
 
     ws->popup.cairo_surface = cairo_image_surface_create_for_data(
-        ws->popup.shm_data, CAIRO_FORMAT_ARGB32, ws->popup.width, ws->popup.height, stride);
+        (unsigned char *)ws->popup.shm_data, CAIRO_FORMAT_ARGB32,
+        ws->popup.width, ws->popup.height, stride);
     ws->popup.cr = cairo_create(ws->popup.cairo_surface);
     return 0;
 }
 
-static void popup_destroy_buffer(struct wl_status *ws)
-{
+static void popup_destroy_buffer(WlStatus *ws) {
     if (ws->popup.cr) cairo_destroy(ws->popup.cr);
-    ws->popup.cr = NULL;
+    ws->popup.cr = nullptr;
     if (ws->popup.cairo_surface) cairo_surface_destroy(ws->popup.cairo_surface);
-    ws->popup.cairo_surface = NULL;
+    ws->popup.cairo_surface = nullptr;
     if (ws->popup.shm_data) {
         int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->popup.width);
         munmap(ws->popup.shm_data, stride * ws->popup.height);
     }
-    ws->popup.shm_data = NULL;
+    ws->popup.shm_data = nullptr;
     if (ws->popup.buffer) wl_buffer_destroy(ws->popup.buffer);
-    ws->popup.buffer = NULL;
+    ws->popup.buffer = nullptr;
 }
 
-static void popup_render(struct wl_status *ws)
-{
+static void popup_render(WlStatus *ws) {
     cairo_t *cr = ws->popup.cr;
     int w = ws->popup.width, h = ws->popup.height;
 
@@ -202,11 +198,11 @@ static void popup_render(struct wl_status *ws)
     draw_rounded_rect(cr, 0, 0, w, h, 8);
     cairo_stroke(cr);
 
-    const char *labels[] = {"Power Off", "Reboot", "Suspend"};
     PangoLayout *lay = pango_cairo_create_layout(cr);
     PangoFontDescription *fd = pango_font_description_from_string("Sans Bold 13");
     pango_layout_set_font_description(lay, fd);
     pango_font_description_free(fd);
+    const char *labels[] = {"Power Off", "Reboot", "Suspend"};
     pango_layout_set_text(lay, labels[ws->popup.action], -1);
     int tw, th;
     pango_layout_get_pixel_size(lay, &tw, &th);
@@ -266,27 +262,25 @@ static void popup_render(struct wl_status *ws)
     wl_surface_commit(ws->popup.surface);
 }
 
-static void popup_destroy(struct wl_status *ws)
-{
+static void popup_destroy(WlStatus *ws) {
     if (!ws->popup.visible) return;
     ws->popup.visible = false;
     popup_destroy_buffer(ws);
     if (ws->popup.layer_surface) {
         zwlr_layer_surface_v1_destroy(ws->popup.layer_surface);
-        ws->popup.layer_surface = NULL;
+        ws->popup.layer_surface = nullptr;
     }
     if (ws->popup.surface) {
         wl_surface_destroy(ws->popup.surface);
-        ws->popup.surface = NULL;
+        ws->popup.surface = nullptr;
     }
     ws->popup.configured = false;
 }
 
 static void popup_layer_surface_configure(void *data,
-    struct zwlr_layer_surface_v1 *surface, uint32_t serial,
-    uint32_t width, uint32_t height)
-{
-    struct wl_status *ws = data;
+    zwlr_layer_surface_v1 *surface, uint32_t serial,
+    uint32_t width, uint32_t height) {
+    auto *ws = (WlStatus *)data;
     zwlr_layer_surface_v1_ack_configure(surface, serial);
     if (width > 0) ws->popup.width = width;
     if (height > 0) ws->popup.height = height;
@@ -298,21 +292,19 @@ static void popup_layer_surface_configure(void *data,
 }
 
 static void popup_layer_surface_closed(void *data,
-    struct zwlr_layer_surface_v1 *surface)
-{
-    ((struct wl_status *)data)->popup.visible = false;
+    zwlr_layer_surface_v1 *) {
+    ((WlStatus *)data)->popup.visible = false;
 }
 
-static const struct zwlr_layer_surface_v1_listener popup_layer_surface_listener = {
+static const zwlr_layer_surface_v1_listener popup_layer_surface_listener = {
     .configure = popup_layer_surface_configure,
     .closed = popup_layer_surface_closed,
 };
 
-static void popup_create(struct wl_status *ws, int action)
-{
+static void popup_create(WlStatus *ws, int action) {
     if (ws->popup.visible) popup_destroy(ws);
 
-    memset(&ws->popup, 0, sizeof(ws->popup));
+    ws->popup = {};
     ws->popup.width = 175;
     ws->popup.height = 105;
     ws->popup.action = action;
@@ -320,7 +312,7 @@ static void popup_create(struct wl_status *ws, int action)
 
     ws->popup.surface = wl_compositor_create_surface(ws->compositor);
     ws->popup.layer_surface = zwlr_layer_shell_v1_get_layer_surface(
-        ws->layer_shell, ws->popup.surface, NULL,
+        ws->layer_shell, ws->popup.surface, nullptr,
         ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "wlstatus-popup");
 
     zwlr_layer_surface_v1_add_listener(ws->popup.layer_surface,
@@ -330,7 +322,7 @@ static void popup_create(struct wl_status *ws, int action)
     zwlr_layer_surface_v1_set_anchor(ws->popup.layer_surface,
         ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
     const char *anchor_str = config_get(ws->cfg, "bar_anchor", "top");
-    int bar_on_bottom = (strcmp(anchor_str, "bottom") == 0);
+    bool bar_on_bottom = (strcmp(anchor_str, "bottom") == 0);
     if (bar_on_bottom) {
         zwlr_layer_surface_v1_set_anchor(ws->popup.layer_surface,
             ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
@@ -347,40 +339,38 @@ static void popup_create(struct wl_status *ws, int action)
     wl_display_roundtrip(ws->display);
 }
 
-static void tooltip_destroy(struct wl_status *ws)
-{
+static void tooltip_destroy(WlStatus *ws) {
     if (!ws->tooltip.visible) return;
     ws->tooltip.visible = false;
     ws->tooltip.hovered_clickable = -1;
     if (ws->tooltip.buffer) {
         cairo_destroy(ws->tooltip.cr);
-        ws->tooltip.cr = NULL;
+        ws->tooltip.cr = nullptr;
         cairo_surface_destroy(ws->tooltip.cairo_surface);
-        ws->tooltip.cairo_surface = NULL;
+        ws->tooltip.cairo_surface = nullptr;
         if (ws->tooltip.shm_data) {
             int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->tooltip.width);
             munmap(ws->tooltip.shm_data, stride * ws->tooltip.height);
         }
-        ws->tooltip.shm_data = NULL;
+        ws->tooltip.shm_data = nullptr;
         wl_buffer_destroy(ws->tooltip.buffer);
-        ws->tooltip.buffer = NULL;
+        ws->tooltip.buffer = nullptr;
     }
     if (ws->tooltip.layer_surface) {
         zwlr_layer_surface_v1_destroy(ws->tooltip.layer_surface);
-        ws->tooltip.layer_surface = NULL;
+        ws->tooltip.layer_surface = nullptr;
     }
     if (ws->tooltip.surface) {
         wl_surface_destroy(ws->tooltip.surface);
-        ws->tooltip.surface = NULL;
+        ws->tooltip.surface = nullptr;
     }
     ws->tooltip.configured = false;
 }
 
 static void tooltip_layer_surface_configure(void *data,
-    struct zwlr_layer_surface_v1 *surface, uint32_t serial,
-    uint32_t width, uint32_t height)
-{
-    struct wl_status *ws = data;
+    zwlr_layer_surface_v1 *surface, uint32_t serial,
+    uint32_t width, uint32_t height) {
+    auto *ws = (WlStatus *)data;
     zwlr_layer_surface_v1_ack_configure(surface, serial);
     if (width > 0) ws->tooltip.width = width;
     if (height > 0) ws->tooltip.height = height;
@@ -389,15 +379,16 @@ static void tooltip_layer_surface_configure(void *data,
         int size = stride * ws->tooltip.height;
         int shm_fd = create_shm_fd(size);
         if (shm_fd < 0) return;
-        struct wl_shm_pool *pool = wl_shm_create_pool(ws->shm, shm_fd, size);
+        wl_shm_pool *pool = wl_shm_create_pool(ws->shm, shm_fd, size);
         ws->tooltip.buffer = wl_shm_pool_create_buffer(pool, 0,
             ws->tooltip.width, ws->tooltip.height, stride, WL_SHM_FORMAT_ARGB8888);
         wl_shm_pool_destroy(pool);
-        ws->tooltip.shm_data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+        ws->tooltip.shm_data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
         close(shm_fd);
-        if (ws->tooltip.shm_data == MAP_FAILED) { ws->tooltip.shm_data = NULL; return; }
+        if (ws->tooltip.shm_data == MAP_FAILED) { ws->tooltip.shm_data = nullptr; return; }
         ws->tooltip.cairo_surface = cairo_image_surface_create_for_data(
-            ws->tooltip.shm_data, CAIRO_FORMAT_ARGB32, ws->tooltip.width, ws->tooltip.height, stride);
+            (unsigned char *)ws->tooltip.shm_data, CAIRO_FORMAT_ARGB32,
+            ws->tooltip.width, ws->tooltip.height, stride);
         ws->tooltip.cr = cairo_create(ws->tooltip.cairo_surface);
 
         cairo_t *cr = ws->tooltip.cr;
@@ -434,24 +425,22 @@ static void tooltip_layer_surface_configure(void *data,
 }
 
 static void tooltip_layer_surface_closed(void *data,
-    struct zwlr_layer_surface_v1 *surface)
-{
-    ((struct wl_status *)data)->tooltip.visible = false;
+    zwlr_layer_surface_v1 *) {
+    ((WlStatus *)data)->tooltip.visible = false;
 }
 
-static const struct zwlr_layer_surface_v1_listener tooltip_layer_surface_listener = {
+static const zwlr_layer_surface_v1_listener tooltip_layer_surface_listener = {
     .configure = tooltip_layer_surface_configure,
     .closed = tooltip_layer_surface_closed,
 };
 
-static void tooltip_show(struct wl_status *ws, const char *text, int hover_x, int hover_y)
-{
+static void tooltip_show(WlStatus *ws, const char *text, int hover_x, int hover_y) {
     if (ws->tooltip.visible && strcmp(ws->tooltip.text, text) == 0)
         return;
 
     tooltip_destroy(ws);
 
-    memset(&ws->tooltip, 0, sizeof(ws->tooltip));
+    ws->tooltip = {};
     ws->tooltip.hover_x = hover_x;
     ws->tooltip.hover_y = hover_y;
     ws->tooltip.hovered_clickable = 0;
@@ -465,7 +454,7 @@ static void tooltip_show(struct wl_status *ws, const char *text, int hover_x, in
 
     ws->tooltip.surface = wl_compositor_create_surface(ws->compositor);
     ws->tooltip.layer_surface = zwlr_layer_shell_v1_get_layer_surface(
-        ws->layer_shell, ws->tooltip.surface, NULL,
+        ws->layer_shell, ws->tooltip.surface, nullptr,
         ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "wlstatus-tooltip");
 
     zwlr_layer_surface_v1_add_listener(ws->tooltip.layer_surface,
@@ -476,7 +465,7 @@ static void tooltip_show(struct wl_status *ws, const char *text, int hover_x, in
         ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
 
     const char *anchor_str = config_get(ws->cfg, "bar_anchor", "top");
-    int bar_on_bottom = (strcmp(anchor_str, "bottom") == 0);
+    bool bar_on_bottom = (strcmp(anchor_str, "bottom") == 0);
     if (bar_on_bottom)
         zwlr_layer_surface_v1_set_margin(ws->tooltip.layer_surface,
             hover_y - ws->tooltip.height - 4, BAR_PADDING, 0, 0);
@@ -491,16 +480,19 @@ static void tooltip_show(struct wl_status *ws, const char *text, int hover_x, in
 
 static volatile sig_atomic_t reload_requested;
 
-static void handle_sighup(int sig)
-{
-    (void)sig;
+static void handle_sighup(int) {
     reload_requested = 1;
 }
 
-static const char *config_path(void);
+static const char *config_path() {
+    const char *home = getenv("HOME");
+    if (!home) return nullptr;
+    static char buf[512];
+    snprintf(buf, sizeof(buf), "%s/.config/wlstatus/config", home);
+    return buf;
+}
 
-static void reload(struct wl_status *ws)
-{
+static void reload(WlStatus *ws) {
     if (ws->popup.visible) popup_destroy(ws);
     if (ws->tooltip.visible) tooltip_destroy(ws);
     destroy_buffer(ws);
@@ -514,8 +506,7 @@ static void reload(struct wl_status *ws)
     render(ws);
 }
 
-static void on_timer(struct wl_status *ws)
-{
+static void on_timer(WlStatus *ws) {
     if (!ws->bar || !ws->running) return;
     bar_update_workspaces(ws->bar);
     bar_update_lua_plugins(ws->bar);
@@ -523,10 +514,9 @@ static void on_timer(struct wl_status *ws)
 }
 
 static void layer_surface_configure(void *data,
-    struct zwlr_layer_surface_v1 *surface, uint32_t serial,
-    uint32_t width, uint32_t height)
-{
-    struct wl_status *ws = data;
+    zwlr_layer_surface_v1 *surface, uint32_t serial,
+    uint32_t width, uint32_t height) {
+    auto *ws = (WlStatus *)data;
     ws->configure_serial = serial;
 
     if (width == 0) width = ws->width;
@@ -542,37 +532,27 @@ static void layer_surface_configure(void *data,
 
     if (!ws->bar) ws->bar = bar_create(ws->width, ws->height, ws->cfg);
     create_buffer(ws);
-    fprintf(stderr, "DEBUG buf_ok\n");
     zwlr_layer_surface_v1_ack_configure(surface, serial);
     ws->configured = true;
-    fprintf(stderr, "DEBUG acked\n");
 
     bar_update_workspaces(ws->bar);
-    fprintf(stderr, "DEBUG ws_ok\n");
-    bar_update_lua_plugins(ws->bar);
-    fprintf(stderr, "DEBUG lua_ok\n");
     render(ws);
-    fprintf(stderr, "DEBUG render_ok\n");
-
-    fprintf(stderr, "configured %dx%d\n", ws->width, ws->height);
 }
 
 static void layer_surface_closed(void *data,
-    struct zwlr_layer_surface_v1 *surface)
-{
-    ((struct wl_status *)data)->running = false;
+    zwlr_layer_surface_v1 *) {
+    ((WlStatus *)data)->running = false;
 }
 
-static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
+static const zwlr_layer_surface_v1_listener layer_surface_listener = {
     .configure = layer_surface_configure,
     .closed = layer_surface_closed,
 };
 
-static void pointer_enter(void *data, struct wl_pointer *pointer,
-    uint32_t serial, struct wl_surface *surface,
-    wl_fixed_t sx, wl_fixed_t sy)
-{
-    struct wl_status *ws = data;
+static void pointer_enter(void *data, wl_pointer *pointer,
+    uint32_t serial, wl_surface *surface,
+    wl_fixed_t sx, wl_fixed_t sy) {
+    auto *ws = (WlStatus *)data;
     ws->current_pointer_surface = surface;
     ws->pointer_x = wl_fixed_to_int(sx);
     ws->pointer_y = wl_fixed_to_int(sy);
@@ -584,7 +564,7 @@ static void pointer_enter(void *data, struct wl_pointer *pointer,
     render(ws);
 
     for (int i = 0; i < ws->bar->n_clickables; i++) {
-        struct clickable *c = &ws->bar->clickables[i];
+        Clickable *c = &ws->bar->clickables[i];
         if (!(ws->pointer_x >= c->x && ws->pointer_x < c->x + c->w &&
               ws->pointer_y >= c->y && ws->pointer_y < c->y + c->h))
             continue;
@@ -611,11 +591,10 @@ static void pointer_enter(void *data, struct wl_pointer *pointer,
     }
 }
 
-static void pointer_leave(void *data, struct wl_pointer *pointer,
-    uint32_t serial, struct wl_surface *surface)
-{
-    struct wl_status *ws = data;
-    ws->current_pointer_surface = NULL;
+static void pointer_leave(void *data, wl_pointer *,
+    uint32_t serial, wl_surface *surface) {
+    auto *ws = (WlStatus *)data;
+    ws->current_pointer_surface = nullptr;
 
     if (ws->popup.visible && surface == ws->popup.surface) {
         if (ws->popup.hovered_btn != -1) {
@@ -631,10 +610,9 @@ static void pointer_leave(void *data, struct wl_pointer *pointer,
         tooltip_destroy(ws);
 }
 
-static void pointer_motion(void *data, struct wl_pointer *pointer,
-    uint32_t time, wl_fixed_t sx, wl_fixed_t sy)
-{
-    struct wl_status *ws = data;
+static void pointer_motion(void *data, wl_pointer *,
+    uint32_t time, wl_fixed_t sx, wl_fixed_t sy) {
+    auto *ws = (WlStatus *)data;
     int x = wl_fixed_to_int(sx);
     int y = wl_fixed_to_int(sy);
     ws->pointer_x = x;
@@ -663,7 +641,7 @@ static void pointer_motion(void *data, struct wl_pointer *pointer,
 
     int found_tooltip = -1;
     for (int i = 0; i < ws->bar->n_clickables; i++) {
-        struct clickable *c = &ws->bar->clickables[i];
+        Clickable *c = &ws->bar->clickables[i];
         if ((c->tooltip_cmd[0] || c->tooltip_text[0]) &&
             x >= c->x && x < c->x + c->w &&
             y >= c->y && y < c->y + c->h) {
@@ -672,7 +650,7 @@ static void pointer_motion(void *data, struct wl_pointer *pointer,
         }
     }
     if (found_tooltip >= 0 && found_tooltip != ws->tooltip.hovered_clickable) {
-        struct clickable *c = &ws->bar->clickables[found_tooltip];
+        Clickable *c = &ws->bar->clickables[found_tooltip];
         if (c->tooltip_text[0]) {
             ws->tooltip.hovered_clickable = found_tooltip;
             tooltip_show(ws, c->tooltip_text, x, y);
@@ -697,19 +675,17 @@ static void pointer_motion(void *data, struct wl_pointer *pointer,
     }
 }
 
-static void execute_command(const char *cmd)
-{
+static void execute_command(const char *cmd) {
     pid_t pid = fork();
     if (pid == 0) {
-        execl("/bin/sh", "sh", "-c", cmd, NULL);
+        execl("/bin/sh", "sh", "-c", cmd, nullptr);
         _exit(1);
     }
 }
 
-static void pointer_button(void *data, struct wl_pointer *pointer,
-    uint32_t serial, uint32_t time, uint32_t button, uint32_t state)
-{
-    struct wl_status *ws = data;
+static void pointer_button(void *data, wl_pointer *,
+    uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
+    auto *ws = (WlStatus *)data;
     if (state != 1) return;
     if (button != 0x110) return;
 
@@ -735,7 +711,7 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
     }
 
     for (int i = 0; i < ws->bar->n_clickables; i++) {
-        struct clickable *c = &ws->bar->clickables[i];
+        Clickable *c = &ws->bar->clickables[i];
         if (x >= c->x && x < c->x + c->w &&
             y >= c->y && y < c->y + c->h) {
             switch (c->action) {
@@ -760,15 +736,14 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
     }
 }
 
-static void pointer_axis(void *data, struct wl_pointer *pointer,
-    uint32_t time, uint32_t axis, wl_fixed_t value)
-{
-    struct wl_status *ws = data;
+static void pointer_axis(void *data, wl_pointer *,
+    uint32_t time, uint32_t axis, wl_fixed_t value) {
+    auto *ws = (WlStatus *)data;
     if (axis != 0) return;
 
     int x = ws->pointer_x, y = ws->pointer_y;
     for (int i = 0; i < ws->bar->n_clickables; i++) {
-        struct clickable *c = &ws->bar->clickables[i];
+        Clickable *c = &ws->bar->clickables[i];
         if (x >= c->x && x < c->x + c->w &&
             y >= c->y && y < c->y + c->h) {
             if (c->lua_plugin_idx >= 0) {
@@ -783,47 +758,41 @@ static void pointer_axis(void *data, struct wl_pointer *pointer,
     }
 }
 
-static void pointer_frame(void *data, struct wl_pointer *pointer) {}
+static void pointer_frame(void *, wl_pointer *) {}
 
-static void keyboard_keymap(void *data, struct wl_keyboard *kb,
-    uint32_t format, int fd, uint32_t size)
-{
-    struct wl_status *ws = data;
+static void keyboard_keymap(void *data, wl_keyboard *,
+    uint32_t format, int fd, uint32_t size) {
+    auto *ws = (WlStatus *)data;
     if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) { close(fd); return; }
-    char *map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    char *map = (char *)mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (map == MAP_FAILED) { close(fd); return; }
-    ws->xkb_keymap = xkb_keymap_new_from_string(ws->xkb_ctx, map,
-        XKB_KEYMAP_FORMAT_TEXT_V1, 0);
+    ws->xkb_kmap = xkb_keymap_new_from_string(ws->xkb_ctx, map,
+        XKB_KEYMAP_FORMAT_TEXT_V1, (xkb_keymap_compile_flags)0);
     munmap(map, size);
     close(fd);
-    if (!ws->xkb_keymap) return;
-    ws->xkb_state = xkb_state_new(ws->xkb_keymap);
+    if (!ws->xkb_kmap) return;
+    ws->xkb_kstate = xkb_state_new(ws->xkb_kmap);
 }
 
-static void keyboard_enter(void *data, struct wl_keyboard *kb,
-    uint32_t serial, struct wl_surface *surface, struct wl_array *keys) {}
+static void keyboard_enter(void *, wl_keyboard *,
+    uint32_t, wl_surface *, wl_array *) {}
+static void keyboard_leave(void *, wl_keyboard *,
+    uint32_t, wl_surface *) {}
+static void keyboard_key(void *, wl_keyboard *,
+    uint32_t, uint32_t, uint32_t, uint32_t) {}
 
-static void keyboard_leave(void *data, struct wl_keyboard *kb,
-    uint32_t serial, struct wl_surface *surface) {}
-
-static void keyboard_key(void *data, struct wl_keyboard *kb,
-    uint32_t serial, uint32_t time, uint32_t key, uint32_t state)
-{
+static void keyboard_modifiers(void *data, wl_keyboard *,
+    uint32_t, uint32_t mods_depressed, uint32_t mods_latched,
+    uint32_t mods_locked, uint32_t group) {
+    auto *ws = (WlStatus *)data;
+    if (ws->xkb_kstate)
+        xkb_state_update_mask(ws->xkb_kstate, mods_depressed, mods_latched, mods_locked, 0, 0, group);
 }
 
-static void keyboard_modifiers(void *data, struct wl_keyboard *kb,
-    uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched,
-    uint32_t mods_locked, uint32_t group)
-{
-    struct wl_status *ws = data;
-    if (ws->xkb_state)
-        xkb_state_update_mask(ws->xkb_state, mods_depressed, mods_latched, mods_locked, 0, 0, group);
-}
+static void keyboard_repeat_info(void *, wl_keyboard *,
+    int32_t, int32_t) {}
 
-static void keyboard_repeat_info(void *data, struct wl_keyboard *kb,
-    int32_t rate, int32_t delay) {}
-
-static const struct wl_keyboard_listener keyboard_listener = {
+static const wl_keyboard_listener keyboard_listener = {
     .keymap = keyboard_keymap,
     .enter = keyboard_enter,
     .leave = keyboard_leave,
@@ -832,7 +801,7 @@ static const struct wl_keyboard_listener keyboard_listener = {
     .repeat_info = keyboard_repeat_info,
 };
 
-static const struct wl_pointer_listener pointer_listener = {
+static const wl_pointer_listener pointer_listener = {
     .enter = pointer_enter,
     .leave = pointer_leave,
     .motion = pointer_motion,
@@ -841,73 +810,69 @@ static const struct wl_pointer_listener pointer_listener = {
     .frame = pointer_frame,
 };
 
-static void seat_capabilities(void *data, struct wl_seat *seat,
-    uint32_t capabilities)
-{
-    struct wl_status *ws = data;
+static void seat_capabilities(void *data, wl_seat *seat,
+    uint32_t capabilities) {
+    auto *ws = (WlStatus *)data;
     if ((capabilities & 1) && !ws->pointer) {
         ws->pointer = wl_seat_get_pointer(seat);
         wl_pointer_add_listener(ws->pointer, &pointer_listener, ws);
     } else if (!(capabilities & 1) && ws->pointer) {
         wl_pointer_destroy(ws->pointer);
-        ws->pointer = NULL;
+        ws->pointer = nullptr;
     }
     if ((capabilities & 2) && !ws->keyboard) {
         ws->keyboard = wl_seat_get_keyboard(seat);
         wl_keyboard_add_listener(ws->keyboard, &keyboard_listener, ws);
     } else if (!(capabilities & 2) && ws->keyboard) {
         wl_keyboard_destroy(ws->keyboard);
-        ws->keyboard = NULL;
+        ws->keyboard = nullptr;
     }
 }
 
-static void seat_name(void *data, struct wl_seat *seat, const char *name) {}
+static void seat_name(void *, wl_seat *, const char *) {}
 
-static const struct wl_seat_listener seat_listener = {
+static const wl_seat_listener seat_listener = {
     .capabilities = seat_capabilities,
     .name = seat_name,
 };
 
-static void registry_global(void *data, struct wl_registry *registry,
-    uint32_t name, const char *interface, uint32_t version)
-{
-    struct wl_status *ws = data;
+static void registry_global(void *data, wl_registry *registry,
+    uint32_t name, const char *interface, uint32_t) {
+    auto *ws = (WlStatus *)data;
 
     if (strcmp(interface, wl_compositor_interface.name) == 0)
-        ws->compositor = wl_registry_bind(registry, name,
-            &wl_compositor_interface, 4);
+        ws->compositor = (wl_compositor *)wl_registry_bind(
+            registry, name, &wl_compositor_interface, 4);
     else if (strcmp(interface, wl_shm_interface.name) == 0)
-        ws->shm = wl_registry_bind(registry, name,
-            &wl_shm_interface, 1);
+        ws->shm = (wl_shm *)wl_registry_bind(
+            registry, name, &wl_shm_interface, 1);
     else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0)
-        ws->layer_shell = wl_registry_bind(registry, name,
-            &zwlr_layer_shell_v1_interface, 4);
+        ws->layer_shell = (zwlr_layer_shell_v1 *)wl_registry_bind(
+            registry, name, &zwlr_layer_shell_v1_interface, 4);
     else if (strcmp(interface, wl_seat_interface.name) == 0) {
-        ws->seat = wl_registry_bind(registry, name,
-            &wl_seat_interface, 7);
+        ws->seat = (wl_seat *)wl_registry_bind(
+            registry, name, &wl_seat_interface, 7);
         wl_seat_add_listener(ws->seat, &seat_listener, ws);
     }
 }
 
-static void registry_global_remove(void *data,
-    struct wl_registry *registry, uint32_t name) {}
+static void registry_global_remove(void *, wl_registry *, uint32_t) {}
 
-static const struct wl_registry_listener registry_listener = {
+static const wl_registry_listener registry_listener = {
     .global = registry_global,
     .global_remove = registry_global_remove,
 };
 
-static int setup_layer_surface(struct wl_status *ws)
-{
+static int setup_layer_surface(WlStatus *ws) {
     ws->surface = wl_compositor_create_surface(ws->compositor);
     if (!ws->surface) return -1;
 
     const char *layer_str = config_get(ws->cfg, "bar_layer", "top");
-    enum zwlr_layer_shell_v1_layer layer = ZWLR_LAYER_SHELL_V1_LAYER_TOP;
+    auto layer = ZWLR_LAYER_SHELL_V1_LAYER_TOP;
     if (strcmp(layer_str, "overlay") == 0)
         layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY;
     ws->layer_surface = zwlr_layer_shell_v1_get_layer_surface(
-        ws->layer_shell, ws->surface, NULL, layer, "wlstatus");
+        ws->layer_shell, ws->surface, nullptr, layer, "wlstatus");
     if (!ws->layer_surface) return -1;
 
     zwlr_layer_surface_v1_add_listener(ws->layer_surface,
@@ -938,31 +903,21 @@ static int setup_layer_surface(struct wl_status *ws)
     return 0;
 }
 
-static const char *config_path(void)
-{
-    const char *home = getenv("HOME");
-    if (!home) return NULL;
-    static char buf[512];
-    snprintf(buf, sizeof(buf), "%s/.config/wlstatus/config", home);
-    return buf;
-}
-
-int main(int argc, char *argv[])
-{
-    struct wl_status ws = {0};
+int main() {
+    WlStatus ws;
     ws.cfg = config_load(config_path());
     int bh = config_get_int(ws.cfg, "bar_height", BAR_HEIGHT);
     ws.width = 1920;
     ws.height = bh;
     ws.running = true;
 
-    ws.display = wl_display_connect(NULL);
+    ws.display = wl_display_connect(nullptr);
     if (!ws.display) {
         fprintf(stderr, "failed to connect to wayland display\n");
         return 1;
     }
 
-    struct wl_registry *registry = wl_display_get_registry(ws.display);
+    wl_registry *registry = wl_display_get_registry(ws.display);
     wl_registry_add_listener(registry, &registry_listener, &ws);
     wl_display_roundtrip(ws.display);
 
@@ -973,23 +928,23 @@ int main(int argc, char *argv[])
 
     ws.xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     if (!ws.xkb_ctx)
-        fprintf(stderr, "warning: failed to create xkb context (keyboard input disabled)\n");
+        fprintf(stderr, "warning: failed to create xkb context\n");
 
     if (setup_layer_surface(&ws) < 0)
         return 1;
 
     ws.timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
     if (ws.timer_fd >= 0) {
-        struct itimerspec ts = {
-            .it_value = { .tv_sec = 1 },
-            .it_interval = { .tv_sec = 1 },
-        };
-        timerfd_settime(ws.timer_fd, 0, &ts, NULL);
+        struct itimerspec ts = {};
+        ts.it_value.tv_sec = 1;
+        ts.it_interval.tv_sec = 1;
+        timerfd_settime(ws.timer_fd, 0, &ts, nullptr);
     }
 
-    struct sigaction sa = { .sa_handler = handle_sighup };
+    struct sigaction sa = {};
+    sa.sa_handler = handle_sighup;
     sigemptyset(&sa.sa_mask);
-    sigaction(SIGHUP, &sa, NULL);
+    sigaction(SIGHUP, &sa, nullptr);
 
     ws.inotify_fd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
     if (ws.inotify_fd >= 0) {
@@ -1015,7 +970,7 @@ int main(int argc, char *argv[])
         int nfds = 1;
         if (ws.timer_fd >= 0) nfds = 2;
         if (ws.inotify_fd >= 0) nfds = 3;
-        int has_display_data = 0;
+        bool has_display_data = false;
 
         while (wl_display_prepare_read(ws.display) != 0)
             wl_display_dispatch_pending(ws.display);
@@ -1031,7 +986,7 @@ int main(int argc, char *argv[])
 
         if (fds[0].revents & POLLIN) {
             wl_display_read_events(ws.display);
-            has_display_data = 1;
+            has_display_data = true;
         } else {
             wl_display_cancel_read(ws.display);
         }
@@ -1049,9 +1004,8 @@ int main(int argc, char *argv[])
             char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
             ssize_t len = read(ws.inotify_fd, buf, sizeof(buf));
             if (len > 0) {
-                const struct inotify_event *ev;
-                for (char *p = buf; p < buf + len; p += sizeof(struct inotify_event) + ev->len) {
-                    ev = (const struct inotify_event *)p;
+                for (char *p = buf; p < buf + len; p += sizeof(struct inotify_event) + ((const struct inotify_event *)p)->len) {
+                    const auto *ev = (const struct inotify_event *)p;
                     if (ev->len > 0 && strcmp(ev->name, "config") == 0) {
                         reload(&ws);
                         break;
