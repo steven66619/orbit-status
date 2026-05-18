@@ -895,9 +895,12 @@ static int setup_layer_surface(struct wl_status *ws)
     ws->surface = wl_compositor_create_surface(ws->compositor);
     if (!ws->surface) return -1;
 
+    const char *layer_str = config_get(ws->cfg, "bar_layer", "top");
+    enum zwlr_layer_shell_v1_layer layer = ZWLR_LAYER_SHELL_V1_LAYER_TOP;
+    if (strcmp(layer_str, "overlay") == 0)
+        layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY;
     ws->layer_surface = zwlr_layer_shell_v1_get_layer_surface(
-        ws->layer_shell, ws->surface, NULL,
-        ZWLR_LAYER_SHELL_V1_LAYER_TOP, "wlstatus");
+        ws->layer_shell, ws->surface, NULL, layer, "wlstatus");
     if (!ws->layer_surface) return -1;
 
     zwlr_layer_surface_v1_add_listener(ws->layer_surface,
