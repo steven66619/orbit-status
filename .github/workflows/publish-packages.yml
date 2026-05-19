@@ -43,13 +43,14 @@ jobs:
           sudo apt-get install -y -qq dpkg-dev apt-utils createrepo-c
 
       - name: Import GPG signing key
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
-        run: |
-          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --import --batch 2>/dev/null
-          echo "${{ secrets.GPG_PASSPHRASE }}" | gpg --batch --yes --passphrase-fd 0 --list-secret-keys 2>/dev/null || true
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            echo "$GPG_PRIVATE_KEY" | gpg --import --batch 2>/dev/null
+            echo "$GPG_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 --list-secret-keys 2>/dev/null || true
+          fi
 
       - name: Regenerate repo metadata
         run: |
