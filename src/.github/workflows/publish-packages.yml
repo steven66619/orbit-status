@@ -7,22 +7,64 @@ on:
   workflow_dispatch:
 
 jobs:
+  build-void:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Void .xbps package
+        run: |
+          chmod +x mkpkg
+          ./mkpkg void 2>&1 || echo "Void build skipped (non-fatal)"
+
+      - name: Upload Void package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: void-xbps
+          path: repo/void/x86_64/
+
   deploy:
+    needs: build-void
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
+      - name: Download Void package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: void-xbps
+          path: repo/void/x86_64/
+
       - name: Install repo tools
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq dpkg-dev apt-utils createrepo-c
 
+      - name: Import GPG signing key
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --import --batch 2>/dev/null
+          echo "${{ secrets.GPG_PASSPHRASE }}" | gpg --batch --yes --passphrase-fd 0 --list-secret-keys 2>/dev/null || true
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+
       - name: Regenerate repo metadata
         run: |
           chmod +x repo/update-repo.sh
-          ./repo/update-repo.sh all
+          GPG_KEY="${GPG_KEY:-steven4x4@gmail.com}" ./repo/update-repo.sh apt
+          GPG_KEY="${GPG_KEY:-steven4x4@gmail.com}" ./repo/update-repo.sh yum
+          GPG_KEY="${GPG_KEY:-steven4x4@gmail.com}" ./repo/update-repo.sh arch
+          # Sign Void repodata manually (xbps-rindex only on Void)
+          void_repodata=$(ls repo/void/x86_64/*-repodata 2>/dev/null | head -1)
+          if [ -n "$void_repodata" ] && gpg --list-keys "$GPG_KEY" &>/dev/null 2>&1; then
+            gpg --detach-sign -o "${void_repodata}.sig" "$void_repodata" 2>/dev/null
+            echo "Void repodata signed: ${void_repodata}.sig"
+          fi
+        env:
+          GPG_KEY: ${{ secrets.GPG_KEY }}
 
       - uses: peaceiris/actions-gh-pages@v3
         with:

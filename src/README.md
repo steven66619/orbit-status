@@ -1,97 +1,115 @@
-# wlstatus-personal
+# wlstatus
 
-Personal variant of [wlstatus](https://github.com/steven66619/wlstatus-new) — a lightweight Wayland status bar.
+A lightweight Wayland status bar for `wlr-layer-shell` compositors (Hyprland, Sway, etc.) with **Lua plugin** support.
 
 ## Features
 
+- **Lua plugins** — every module is a Lua script. System info (CPU, memory, disk, network, battery, updates) are bundled Lua plugins. Write your own in Lua — no C compilation needed.
 - **Auto-reload** — config changes are picked up instantly via inotify
-- **Modular design** — enable/disable any section: clock, CPU, memory, disk, updates, volume, network, battery, power buttons
-- **Custom command modules** — up to 4 user-defined pills that run any script/command
-- **Tooltip popups** — hover over any pill to see extended info (top processes, pending updates, disk usage, etc.)
-- **Icons** — customizable icons/prefixes per module (unicode symbols or text)
-- **Color-by-state** — updates pill turns red when updates are pending, disk pill turns orange when above threshold
-- **Configurable anchor** — bar can be placed at top or bottom
-- **Click commands** — assign commands to any pill (e.g. `click_cpu = foot htop`)
-- **Lightweight** — single C binary, no JavaScript, no CSS, no dependencies beyond Wayland + Cairo + Pango
+- **Tooltip popups** — hover over any pill to see extended info (top processes, pending updates, etc.)
+- **Color-by-plugin** — each plugin pill gets its own configurable color
+- **Click commands** — assign shell commands to any plugin pill
+- **Lightweight** — single C binary (~70KB), no JavaScript, no CSS
+- **Wayland native** — layer-shell protocol, SHM buffers, cairo/Pango rendering
 
-## Package Repositories
-
-Packages are hosted at `https://steven66619.github.io/wlstatus-new/`.
-
-### DNF (Fedora / RHEL)
+## Quick Start
 
 ```bash
-sudo dnf config-manager addrepo --from-repofile=https://steven66619.github.io/wlstatus-new/wlstatus-personal.repo
-sudo dnf install wlstatus-personal
+make
+sudo make install
 ```
 
-### APT (Debian / Ubuntu)
+Then add Lua plugin paths to `~/.config/wlstatus/config` (see example config in repo).
 
-```bash
-curl -fsSL https://steven66619.github.io/wlstatus-new/GPG-KEY | sudo gpg --dearmor -o /usr/share/keyrings/wlstatus.gpg
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/wlstatus.gpg] https://steven66619.github.io/wlstatus-new/apt stable main" | sudo tee /etc/apt/sources.list.d/wlstatus.list
-sudo apt update && sudo apt install wlstatus-personal
+## Lua Plugin API
+
+Each `.lua` file placed in the plugin path is loaded into its own Lua state.
+
+### Required
+
+```lua
+function tick()
+    -- Return a string to display in the bar pill
+    return "my output"
+end
 ```
 
-### Arch Linux
+### Optional
 
-Add to `/etc/pacman.conf`:
+```lua
+-- Update interval in seconds (default: 5)
+interval = 10
 
-```ini
-[wlstatus-personal]
-SigLevel = Optional TrustAll
-Server = https://steven66619.github.io/wlstatus-new/arch/x86_64
+-- Called when the pill is clicked
+function on_click()
+    -- e.g., os.execute("foot htop")
+end
+
+-- Return tooltip text shown on hover
+function on_tooltip()
+    return "detailed info here"
+end
 ```
 
-```bash
-sudo pacman -Sy wlstatus-personal
-```
+### Standard library available
 
-### Post-Install
+All of Lua 5.4's standard library is available, including `io.popen()`, `io.open()`, `os.execute()`, string matching, etc. Each plugin runs in its own Lua state — they cannot interfere with each other.
 
-```bash
-wlstatus-personal-setup
-```
+## Bundled Plugins
 
-This copies config files to `~/.config/wlstatus/config` and dotfiles to `~/.config/`.
+Installed to `/usr/local/share/wlstatus/plugins/`:
+
+| Plugin     | Description              | Interval |
+|------------|--------------------------|----------|
+| `cpu.lua`  | CPU usage %              | 2s       |
+| `mem.lua`  | Memory usage %           | 5s       |
+| `disk.lua` | Disk usage %             | 120s     |
+| `volume.lua` | Audio volume %         | 3s       |
+| `network.lua` | WiFi SSID             | 10s      |
+| `battery.lua` | Battery % + charging  | 10s      |
+| `updates.lua` | Package update count  | 30s      |
 
 ## Configuration
 
 Config is at `~/.config/wlstatus/config` and reloads automatically on save.
 
-### Module visibility
+### Lua plugin configuration
 
 ```ini
-show_clock    = 1
-show_cpu      = 1
-show_mem      = 1
-show_updates  = 1
-show_disk     = 1
-show_volume   = 1
-show_network  = 1
-show_battery  = 1
-show_power    = 1
+# Enable a Lua plugin and point it to its .lua file
+lua_plugin_1_path = /usr/local/share/wlstatus/plugins/cpu.lua
+show_lua_plugin_1 = 1
+lua_plugin_1_prefix = CPU
+lua_plugin_1_color = 0.0 0.9 1.0 1.0
+click_lua_plugin_1 = foot htop
 ```
 
-Set any to `0` to hide it.
+- `lua_plugin_N_path` — path to the Lua script (required)
+- `show_lua_plugin_N` — set to `0` to hide (default: `1`)
+- `lua_plugin_N_prefix` — text shown before the tick output
+- `lua_plugin_N_color` — pill border/fill color as `r g b a`
+- `click_lua_plugin_N` — shell command to run on click
 
-### Icons / prefixes
+### UI elements
 
 ```ini
-cpu_icon    = 🖥
-mem_icon    = ☰
-updates_icon = ⬆
-disk_icon   = 💾
-volume_icon = 🔊
-battery_icon = 🔋
+show_clock  = 1
+show_power  = 1
+show_hyperion = 1
 ```
 
-Set to any text or unicode symbol.
-
-### Date/time
+### Clock
 
 ```ini
 date_format = %a %b %d  %H:%M
+```
+
+### Pill styling
+
+```ini
+pill_pad_h = 4
+pill_pad_w = 8
+pill_gap   = 6
 ```
 
 ### Bar position
@@ -100,87 +118,49 @@ date_format = %a %b %d  %H:%M
 bar_anchor = top   # or "bottom"
 ```
 
-### Update & disk intervals
+## Package Repositories
 
-```ini
-update_interval = 30    # seconds between update checks
-disk_interval   = 120   # seconds between disk usage checks
+### DNF (Fedora / RHEL)
+
+```bash
+sudo dnf config-manager addrepo --from-repofile=https://steven66619.github.io/wlstatus-new/wlstatus.repo
+sudo dnf install wlstatus
 ```
 
-Custom update command (leave empty for auto-detect):
+### APT (Debian / Ubuntu)
 
-```ini
-update_cmd = dnf check-update -q
+```bash
+curl -fsSL https://steven66619.github.io/wlstatus-new/GPG-KEY | sudo gpg --dearmor -o /usr/share/keyrings/wlstatus.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/wlstatus.gpg] https://steven66619.github.io/wlstatus-new/apt stable main" | sudo tee /etc/apt/sources.list.d/wlstatus.list
+sudo apt update && sudo apt install wlstatus
 ```
 
-### Color alerts
+### Arch Linux
+
+Add to `/etc/pacman.conf`:
 
 ```ini
-updates_alert_color = 1.0 0.2 0.2   # shown when updates > 0
-disk_warn_color     = 1.0 0.6 0.0   # shown when disk >= disk_warn_threshold
-disk_warn_threshold = 90
+[wlstatus]
+SigLevel = Optional TrustAll
+Server = https://steven66619.github.io/wlstatus-new/arch/x86_64
 ```
 
-### Click commands per module
-
-```ini
-click_cpu     = foot htop
-click_mem     = foot btop
-click_updates = foot sh -c "pacman -Qu | less"
-click_disk    = foot df -h
-click_volume  = pavucontrol
-click_network = foot nmtui
-click_battery = foot powerprofilesctl
+```bash
+sudo pacman -Sy wlstatus
 ```
 
-### Custom command modules
-
-Add up to 4 custom pills that run any command and display the output:
-
-```ini
-show_custom_1 = 1
-custom_1_cmd  = ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v 127.0.0.1 | head -1
-custom_1_prefix = IP
-custom_1_interval = 600        # seconds between updates
-custom_1_color = 1.0 0.5 0.0   # border color
-click_custom_1 = foot ip addr
-```
-
-### Pill sizing
-
-```ini
-pill_pad_h = 4
-pill_pad_w = 8
-pill_gap   = 6
-```
-
-## Tooltips
-
-Hover over any data pill to see detailed information:
-- **CPU** — top 5 processes by CPU usage
-- **MEM** — top 5 processes by memory usage
-- **UPD** — pending package updates
-- **DSK** — filesystem usage
-- **VOL** — current volume and mute status
-- **NET** — WiFi link information
-- **BAT** — battery status
-
-## Build from Source
+### Build from source
 
 ```sh
 make
 sudo make install
 ```
 
-Or use the install script:
-
-```sh
-./install-personal.sh
-```
+Dependencies: `wayland-client`, `cairo`, `pangocairo`, `xkbcommon`, `lua5.4`.
 
 ## Signal / Auto-reload
 
-The bar reloads automatically when the config file changes. You can also force a reload with:
+The bar reloads automatically when the config file changes. Force a reload with:
 
 ```sh
 kill -HUP $(pgrep wlstatus)

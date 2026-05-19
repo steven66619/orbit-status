@@ -5,11 +5,12 @@
 #include <time.h>
 #include <cairo.h>
 #include "config.h"
+#include "lua_plugin.h"
 
 #define BAR_HEIGHT 38
 #define BAR_PADDING 8
 #define MAX_WORKSPACES 10
-#define MAX_CUSTOM_MODULES 4
+#define MAX_LUA_PLUGINS 12
 
 enum click_action {
     CLICK_NONE,
@@ -25,16 +26,13 @@ struct clickable {
     enum click_action action;
     char command[256];
     char tooltip_cmd[128];
+    char tooltip_text[512];
+    int lua_plugin_idx;
 };
 
 struct workspace {
     int id;
     bool active;
-};
-
-struct custom_module {
-    char output[64];
-    time_t last_check;
 };
 
 struct bar {
@@ -50,28 +48,8 @@ struct bar {
     struct workspace workspaces[MAX_WORKSPACES];
     int n_workspaces;
 
-    long cpu_prev_total;
-    long cpu_prev_idle;
-    int cpu_percent;
-    int mem_percent;
-    int updates_count;
-    time_t updates_last_check;
-    time_t updates_last_sync;
-    bool updates_auto_notified;
-
-    int disk_percent;
-    time_t disk_last_check;
-
-    int volume_percent;
-    bool volume_muted;
-
-    char network_ssid[64];
-
-    int battery_percent;
-    bool battery_charging;
-    bool battery_present;
-
-    struct custom_module custom_modules[MAX_CUSTOM_MODULES];
+    struct lua_plugin lua_plugins[MAX_LUA_PLUGINS];
+    int n_lua_plugins;
 };
 
 struct bar *bar_create(int width, int height, struct config *cfg);
@@ -83,12 +61,7 @@ void bar_clear_hover(struct bar *bar);
 void bar_load_png_icon(struct bar *bar, const char *path, int index);
 void draw_rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r);
 void bar_update_workspaces(struct bar *bar);
-void bar_update_system_info(struct bar *bar);
-void bar_update_updates(struct bar *bar);
-void bar_update_disk(struct bar *bar);
-void bar_update_volume(struct bar *bar);
-void bar_update_network(struct bar *bar);
-void bar_update_battery(struct bar *bar);
-void bar_update_custom_modules(struct bar *bar);
+void bar_update_lua_plugins(struct bar *bar);
+void bar_lua_plugins_destroy(struct bar *bar);
 
 #endif

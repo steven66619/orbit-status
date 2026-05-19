@@ -138,6 +138,12 @@ static void render(struct wl_status *ws)
     wl_surface_attach(ws->surface, ws->buffer, 0, 0);
     wl_surface_damage_buffer(ws->surface, 0, 0, ws->width, ws->height);
     wl_surface_commit(ws->surface);
+
+    if (ws->popup.visible && ws->popup.buffer && ws->popup.surface) {
+        wl_surface_attach(ws->popup.surface, ws->popup.buffer, 0, 0);
+        wl_surface_damage_buffer(ws->popup.surface, 0, 0, ws->popup.width, ws->popup.height);
+        wl_surface_commit(ws->popup.surface);
+    }
 }
 
 static int popup_create_buffer(struct wl_status *ws)
@@ -338,6 +344,7 @@ static void popup_create(struct wl_status *ws, int action)
 
     ws->popup.visible = true;
     wl_surface_commit(ws->popup.surface);
+    wl_display_roundtrip(ws->display);
 }
 
 static void tooltip_destroy(struct wl_status *ws)
@@ -503,13 +510,7 @@ static void reload(struct wl_status *ws)
     ws->bar = bar_create(ws->width, ws->height, ws->cfg);
     create_buffer(ws);
     bar_update_workspaces(ws->bar);
-    bar_update_system_info(ws->bar);
-    bar_update_updates(ws->bar);
-    bar_update_disk(ws->bar);
-    bar_update_volume(ws->bar);
-    bar_update_network(ws->bar);
-    bar_update_battery(ws->bar);
-    bar_update_custom_modules(ws->bar);
+    bar_update_lua_plugins(ws->bar);
     render(ws);
 }
 
@@ -517,13 +518,7 @@ static void on_timer(struct wl_status *ws)
 {
     if (!ws->bar || !ws->running) return;
     bar_update_workspaces(ws->bar);
-    bar_update_system_info(ws->bar);
-    bar_update_updates(ws->bar);
-    bar_update_disk(ws->bar);
-    bar_update_volume(ws->bar);
-    bar_update_network(ws->bar);
-    bar_update_battery(ws->bar);
-    bar_update_custom_modules(ws->bar);
+    bar_update_lua_plugins(ws->bar);
     render(ws);
 }
 
@@ -547,18 +542,19 @@ static void layer_surface_configure(void *data,
 
     if (!ws->bar) ws->bar = bar_create(ws->width, ws->height, ws->cfg);
     create_buffer(ws);
+    fprintf(stderr, "DEBUG buf_ok\n");
     zwlr_layer_surface_v1_ack_configure(surface, serial);
     ws->configured = true;
+    fprintf(stderr, "DEBUG acked\n");
 
     bar_update_workspaces(ws->bar);
-    bar_update_system_info(ws->bar);
-    bar_update_updates(ws->bar);
-    bar_update_disk(ws->bar);
-    bar_update_volume(ws->bar);
-    bar_update_network(ws->bar);
-    bar_update_battery(ws->bar);
-    bar_update_custom_modules(ws->bar);
+    fprintf(stderr, "DEBUG ws_ok\n");
+    bar_update_lua_plugins(ws->bar);
+    fprintf(stderr, "DEBUG lua_ok\n");
     render(ws);
+    fprintf(stderr, "DEBUG render_ok\n");
+
+    fprintf(stderr, "configured %dx%d\n", ws->width, ws->height);
 }
 
 static void layer_surface_closed(void *data,
@@ -589,9 +585,14 @@ static void pointer_enter(void *data, struct wl_pointer *pointer,
 
     for (int i = 0; i < ws->bar->n_clickables; i++) {
         struct clickable *c = &ws->bar->clickables[i];
-        if (c->tooltip_cmd[0] &&
-            ws->pointer_x >= c->x && ws->pointer_x < c->x + c->w &&
-            ws->pointer_y >= c->y && ws->pointer_y < c->y + c->h) {
+        if (!(ws->pointer_x >= c->x && ws->pointer_x < c->x + c->w &&
+              ws->pointer_y >= c->y && ws->pointer_y < c->y + c->h))
+            continue;
+
+        if (c->tooltip_text[0]) {
+            ws->tooltip.hovered_clickable = i;
+            tooltip_show(ws, c->tooltip_text, ws->pointer_x, ws->pointer_y);
+        } else if (c->tooltip_cmd[0]) {
             FILE *fp = popen(c->tooltip_cmd, "r");
             if (fp) {
                 char buf[512] = {0};
@@ -605,8 +606,8 @@ static void pointer_enter(void *data, struct wl_pointer *pointer,
                 ws->tooltip.hovered_clickable = i;
                 tooltip_show(ws, buf, ws->pointer_x, ws->pointer_y);
             }
-            break;
         }
+        break;
     }
 }
 
@@ -663,7 +664,7 @@ static void pointer_motion(void *data, struct wl_pointer *pointer,
     int found_tooltip = -1;
     for (int i = 0; i < ws->bar->n_clickables; i++) {
         struct clickable *c = &ws->bar->clickables[i];
-        if (c->tooltip_cmd[0] &&
+        if ((c->tooltip_cmd[0] || c->tooltip_text[0]) &&
             x >= c->x && x < c->x + c->w &&
             y >= c->y && y < c->y + c->h) {
             found_tooltip = i;
@@ -671,18 +672,24 @@ static void pointer_motion(void *data, struct wl_pointer *pointer,
         }
     }
     if (found_tooltip >= 0 && found_tooltip != ws->tooltip.hovered_clickable) {
-        FILE *fp = popen(ws->bar->clickables[found_tooltip].tooltip_cmd, "r");
-        if (fp) {
-            char buf[512] = {0};
-            size_t total = 0;
-            char line[256];
-            while (fgets(line, sizeof(line), fp) && total < sizeof(buf) - 1) {
-                int len = snprintf(buf + total, sizeof(buf) - total, "%s", line);
-                if (len > 0) total += len;
-            }
-            pclose(fp);
+        struct clickable *c = &ws->bar->clickables[found_tooltip];
+        if (c->tooltip_text[0]) {
             ws->tooltip.hovered_clickable = found_tooltip;
-            tooltip_show(ws, buf, x, y);
+            tooltip_show(ws, c->tooltip_text, x, y);
+        } else {
+            FILE *fp = popen(c->tooltip_cmd, "r");
+            if (fp) {
+                char buf[512] = {0};
+                size_t total = 0;
+                char line[256];
+                while (fgets(line, sizeof(line), fp) && total < sizeof(buf) - 1) {
+                    int len = snprintf(buf + total, sizeof(buf) - total, "%s", line);
+                    if (len > 0) total += len;
+                }
+                pclose(fp);
+                ws->tooltip.hovered_clickable = found_tooltip;
+                tooltip_show(ws, buf, x, y);
+            }
         }
     } else if (found_tooltip < 0) {
         if (ws->tooltip.visible)
@@ -706,9 +713,10 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
     if (state != 1) return;
     if (button != 0x110) return;
 
+    int x = ws->pointer_x, y = ws->pointer_y;
+
     if (ws->popup.visible) {
         if (ws->current_pointer_surface == ws->popup.surface) {
-            int x = ws->pointer_x, y = ws->pointer_y;
             if (x >= ws->popup.confirm_btn_x && x < ws->popup.confirm_btn_x + ws->popup.confirm_btn_w &&
                 y >= ws->popup.confirm_btn_y && y < ws->popup.confirm_btn_y + ws->popup.confirm_btn_h) {
                 const char *cmds[] = {"systemctl poweroff", "systemctl reboot", "systemctl suspend"};
@@ -723,28 +731,31 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
             }
         } else {
             popup_destroy(ws);
-            return;
         }
     }
 
-    enum click_action action = bar_handle_click(ws->bar,
-        ws->pointer_x, ws->pointer_y);
-
-    if (action == CLICK_POWEROFF || action == CLICK_REBOOT || action == CLICK_SUSPEND) {
-        int a = (action == CLICK_POWEROFF) ? 0 : (action == CLICK_REBOOT) ? 1 : 2;
-        popup_create(ws, a);
-        return;
-    }
-
-    if (action == CLICK_HYPRCTL || action == CLICK_RUN) {
-        for (int i = 0; i < ws->bar->n_clickables; i++) {
-            struct clickable *c = &ws->bar->clickables[i];
-            if (c->action == action &&
-                ws->pointer_x >= c->x && ws->pointer_x < c->x + c->w &&
-                ws->pointer_y >= c->y && ws->pointer_y < c->y + c->h) {
+    for (int i = 0; i < ws->bar->n_clickables; i++) {
+        struct clickable *c = &ws->bar->clickables[i];
+        if (x >= c->x && x < c->x + c->w &&
+            y >= c->y && y < c->y + c->h) {
+            switch (c->action) {
+            case CLICK_POWEROFF:
+                popup_create(ws, 0);
+                break;
+            case CLICK_REBOOT:
+                popup_create(ws, 1);
+                break;
+            case CLICK_SUSPEND:
+                popup_create(ws, 2);
+                break;
+            case CLICK_HYPRCTL:
+            case CLICK_RUN:
                 execute_command(c->command);
                 break;
+            default:
+                break;
             }
+            break;
         }
     }
 }
@@ -752,6 +763,24 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
 static void pointer_axis(void *data, struct wl_pointer *pointer,
     uint32_t time, uint32_t axis, wl_fixed_t value)
 {
+    struct wl_status *ws = data;
+    if (axis != 0) return;
+
+    int x = ws->pointer_x, y = ws->pointer_y;
+    for (int i = 0; i < ws->bar->n_clickables; i++) {
+        struct clickable *c = &ws->bar->clickables[i];
+        if (x >= c->x && x < c->x + c->w &&
+            y >= c->y && y < c->y + c->h) {
+            if (c->lua_plugin_idx >= 0) {
+                int direction = (value > 0) ? -1 : 1;
+                lua_plugin_call_onscroll(
+                    &ws->bar->lua_plugins[c->lua_plugin_idx], direction);
+                bar_update_lua_plugins(ws->bar);
+                render(ws);
+            }
+            break;
+        }
+    }
 }
 
 static void pointer_frame(void *data, struct wl_pointer *pointer) {}
@@ -873,9 +902,12 @@ static int setup_layer_surface(struct wl_status *ws)
     ws->surface = wl_compositor_create_surface(ws->compositor);
     if (!ws->surface) return -1;
 
+    const char *layer_str = config_get(ws->cfg, "bar_layer", "top");
+    enum zwlr_layer_shell_v1_layer layer = ZWLR_LAYER_SHELL_V1_LAYER_TOP;
+    if (strcmp(layer_str, "overlay") == 0)
+        layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY;
     ws->layer_surface = zwlr_layer_shell_v1_get_layer_surface(
-        ws->layer_shell, ws->surface, NULL,
-        ZWLR_LAYER_SHELL_V1_LAYER_TOP, "wlstatus");
+        ws->layer_shell, ws->surface, NULL, layer, "wlstatus");
     if (!ws->layer_surface) return -1;
 
     zwlr_layer_surface_v1_add_listener(ws->layer_surface,
@@ -891,7 +923,10 @@ static int setup_layer_surface(struct wl_status *ws)
     else
         anchor |= ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
     zwlr_layer_surface_v1_set_anchor(ws->layer_surface, anchor);
-    zwlr_layer_surface_v1_set_exclusive_zone(ws->layer_surface, bh);
+    if (layer == ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY)
+        zwlr_layer_surface_v1_set_exclusive_zone(ws->layer_surface, 0);
+    else
+        zwlr_layer_surface_v1_set_exclusive_zone(ws->layer_surface, bh);
 
     wl_surface_commit(ws->surface);
     wl_display_roundtrip(ws->display);
