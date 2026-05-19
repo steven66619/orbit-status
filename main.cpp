@@ -12,6 +12,8 @@
 #include <sys/inotify.h>
 #include <csignal>
 #include <cerrno>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <cctype>
 #ifdef __cplusplus
 #define namespace namespace_
@@ -48,6 +50,8 @@ struct WlStatus {
 
     Bar *bar = nullptr;
     Config *cfg = nullptr;
+    TrackedWindow tracked_windows[MAX_TRACKED_WINDOWS];
+    int n_tracked_windows = 0;
     bool configured = false;
     bool running = false;
     uint32_t configure_serial = 0;
@@ -56,6 +60,8 @@ struct WlStatus {
 
     int timer_fd = -1;
     int inotify_fd = -1;
+    int plugin_ifd = -1;
+    int hypr_ev_fd = -1;
 
     struct {
         wl_surface *surface = nullptr;
@@ -484,6 +490,131 @@ static void handle_sighup(int) {
     reload_requested = 1;
 }
 
+static int hypr_connect_socket(const char *sock_name) {
+    const char *xdg = getenv("XDG_RUNTIME_DIR");
+    const char *inst = getenv("HYPRLAND_INSTANCE_SIGNATURE");
+    if (!xdg || !inst) return -1;
+
+    char path[256];
+    snprintf(path, sizeof(path), "%s/hypr/%s/%s", xdg, inst, sock_name);
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+
+    struct sockaddr_un addr = {};
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    return fd;
+}
+
+static int hypr_connect_event_socket() {
+    return hypr_connect_socket(".socket2.sock");
+}
+
+static int hypr_send_command(const char *cmd) {
+    int fd = hypr_connect_socket(".socket.sock");
+    if (fd < 0) return -1;
+    write(fd, cmd, strlen(cmd));
+    write(fd, "\n", 1);
+    char buf[4096];
+    int n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    return n;
+}
+
+static void hypr_disconnect(WlStatus *ws) {
+    if (ws->hypr_ev_fd >= 0) {
+        close(ws->hypr_ev_fd);
+        ws->hypr_ev_fd = -1;
+    }
+}
+
+static void track_window_add(WlStatus *ws, const char *address, int workspace_id, const char *cls);
+static void track_window_remove(WlStatus *ws, const char *address);
+static void track_window_move(WlStatus *ws, const char *address, int workspace_id);
+
+static bool hypr_read_events(int fd, WlStatus *ws) {
+    char buf[4096];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    if (n <= 0) {
+        if (n == 0 || (n < 0 && errno == ECONNRESET))
+            hypr_disconnect(ws);
+        return false;
+    }
+    buf[n] = '\0';
+
+    bool need_update = false;
+    char *p = buf;
+    while (p && *p) {
+        char *newline = strchr(p, '\n');
+        if (newline) *newline = '\0';
+
+        char *delim = strstr(p, ">>");
+        if (delim) {
+            *delim = '\0';
+            const char *event = p;
+            const char *data = delim + 2;
+
+            if (strcmp(event, "activewindow") == 0) {
+                const char *comma = strchr(data, ',');
+                if (comma) {
+                    size_t class_len = comma - data;
+                    if (class_len > 63) class_len = 63;
+                    char cls[64];
+                    memcpy(cls, data, class_len);
+                    cls[class_len] = '\0';
+                    const char *title = comma + 1;
+                    while (*title == ' ') title++;
+                    bar_set_active_window(ws->bar, cls, title);
+                }
+                need_update = true;
+            } else if (strcmp(event, "windowtitle") == 0) {
+                bar_set_active_window(ws->bar, nullptr, data);
+                need_update = true;
+            } else if (strcmp(event, "openwindow") == 0) {
+                char addr[32], cls[64];
+                int ws_id;
+                if (sscanf(data, "%31[^,],%d,%63[^,]", addr, &ws_id, cls) >= 2) {
+                    track_window_add(ws, addr, ws_id, cls);
+                }
+                need_update = true;
+            } else if (strcmp(event, "closewindow") == 0) {
+                track_window_remove(ws, data);
+                need_update = true;
+            } else if (strcmp(event, "movewindow") == 0) {
+                char addr[32];
+                int ws_id;
+                if (sscanf(data, "%31[^,],%d", addr, &ws_id) == 2)
+                    track_window_move(ws, addr, ws_id);
+                need_update = true;
+            } else if (strcmp(event, "movetoworkspace") == 0) {
+                char addr[32];
+                int ws_id;
+                if (sscanf(data, "%d,%31s", &ws_id, addr) == 2)
+                    track_window_move(ws, addr, ws_id);
+                need_update = true;
+            } else if (strcmp(event, "workspace") == 0 ||
+                       strcmp(event, "workspacev2") == 0 ||
+                       strcmp(event, "focusedmon") == 0) {
+                need_update = true;
+            }
+        }
+
+        p = newline ? newline + 1 : nullptr;
+    }
+
+    return need_update;
+}
+
 static const char *config_path() {
     const char *home = getenv("HOME");
     if (!home) return nullptr;
@@ -492,23 +623,146 @@ static const char *config_path() {
     return buf;
 }
 
+static void setup_plugin_watches(WlStatus *ws) {
+    if (!ws->bar) return;
+    ws->plugin_ifd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
+    if (ws->plugin_ifd < 0) return;
+
+    for (int i = 0; i < ws->bar->n_lua_plugins; i++) {
+        char watchkey[32];
+        snprintf(watchkey, sizeof(watchkey), "lua_plugin_%d_watch", i + 1);
+        const char *watch = config_get(ws->cfg, watchkey, "");
+        if (watch[0]) {
+            int wd = inotify_add_watch(ws->plugin_ifd, watch, IN_MODIFY);
+            if (wd >= 0) ws->bar->lua_plugins[i].watch_wd = wd;
+        }
+    }
+
+    const char *plugins_dir = config_get(ws->cfg, "lua_plugins_dir", nullptr);
+    if (!plugins_dir) {
+        const char *home = getenv("HOME");
+        if (home) {
+            static char dir[256];
+            snprintf(dir, sizeof(dir), "%s/.config/wlstatus/plugins", home);
+            plugins_dir = dir;
+        }
+    }
+
+    if (plugins_dir) {
+        auto add_watch_for_plugin = [&](int idx, const char *sysfs) {
+            if (idx < 0 || idx >= ws->bar->n_lua_plugins) return;
+            if (ws->bar->lua_plugins[idx].watch_wd >= 0) return;
+            if (access(sysfs, F_OK) != 0) return;
+            int wd = inotify_add_watch(ws->plugin_ifd, sysfs, IN_MODIFY);
+            if (wd >= 0) ws->bar->lua_plugins[idx].watch_wd = wd;
+        };
+
+        for (int i = 0; i < ws->bar->n_lua_plugins; i++) {
+            const char *pname = ws->bar->lua_plugins[i].path;
+            if (!pname[0]) continue;
+
+            if (strstr(pname, "battery")) {
+                add_watch_for_plugin(i, "/sys/class/power_supply/BAT0/uevent");
+            } else if (strstr(pname, "brightness")) {
+                static const char *backlights[] = {
+                    "/sys/class/backlight/intel_backlight/brightness",
+                    "/sys/class/backlight/amdgpu_bl0/brightness",
+                    "/sys/class/backlight/nvidia_0/brightness",
+                    nullptr
+                };
+                for (int b = 0; backlights[b]; b++) {
+                    if (access(backlights[b], F_OK) == 0) {
+                        add_watch_for_plugin(i, backlights[b]);
+                        break;
+                    }
+                }
+            } else if (strstr(pname, "network") || strstr(pname, "net")) {
+                add_watch_for_plugin(i, "/sys/class/net");
+            }
+        }
+    }
+}
+
+static void track_window_add(WlStatus *ws, const char *address, int workspace_id, const char *cls) {
+    if (ws->n_tracked_windows >= MAX_TRACKED_WINDOWS) return;
+    auto *tw = &ws->tracked_windows[ws->n_tracked_windows++];
+    snprintf(tw->address, sizeof(tw->address), "%s", address);
+    tw->workspace_id = workspace_id;
+    snprintf(tw->cls, sizeof(tw->cls), "%s", cls);
+}
+
+static void track_window_remove(WlStatus *ws, const char *address) {
+    for (int i = 0; i < ws->n_tracked_windows; i++) {
+        if (strcmp(ws->tracked_windows[i].address, address) == 0) {
+            ws->tracked_windows[i] = ws->tracked_windows[--ws->n_tracked_windows];
+            return;
+        }
+    }
+}
+
+static void track_window_move(WlStatus *ws, const char *address, int workspace_id) {
+    for (int i = 0; i < ws->n_tracked_windows; i++) {
+        if (strcmp(ws->tracked_windows[i].address, address) == 0) {
+            ws->tracked_windows[i].workspace_id = workspace_id;
+            return;
+        }
+    }
+}
+
+static void init_window_tracking(WlStatus *ws) {
+    ws->n_tracked_windows = 0;
+    FILE *fp = popen("hyprctl clients 2>/dev/null", "r");
+    if (!fp) return;
+
+    char line[256];
+    char cur_addr[32] = "";
+    int cur_ws = -1;
+    while (fgets(line, sizeof(line), fp)) {
+        char addr[32];
+        int ws_id;
+        if (sscanf(line, "Window %31s -> workspace ID %d", addr, &ws_id) == 2) {
+            snprintf(cur_addr, sizeof(cur_addr), "%s", addr);
+            cur_ws = ws_id;
+        } else if (cur_addr[0]) {
+            char cls[64];
+            if (sscanf(line, "\tclass: %63[^\n]", cls) == 1) {
+                track_window_add(ws, cur_addr, cur_ws, cls);
+                cur_addr[0] = '\0';
+            }
+        }
+    }
+    pclose(fp);
+
+    bar_update_workspace_names(ws->bar, ws->tracked_windows, ws->n_tracked_windows);
+}
+
 static void reload(WlStatus *ws) {
     if (ws->popup.visible) popup_destroy(ws);
     if (ws->tooltip.visible) tooltip_destroy(ws);
     destroy_buffer(ws);
     if (ws->bar) bar_destroy(ws->bar);
     config_destroy(ws->cfg);
+    if (ws->plugin_ifd >= 0) { close(ws->plugin_ifd); ws->plugin_ifd = -1; }
     ws->cfg = config_load(config_path());
     ws->bar = bar_create(ws->width, ws->height, ws->cfg);
     create_buffer(ws);
+    setup_plugin_watches(ws);
     bar_update_workspaces(ws->bar);
+    init_window_tracking(ws);
     bar_update_lua_plugins(ws->bar);
     render(ws);
 }
 
 static void on_timer(WlStatus *ws) {
     if (!ws->bar || !ws->running) return;
-    bar_update_workspaces(ws->bar);
+
+    if (ws->hypr_ev_fd < 0) {
+        ws->hypr_ev_fd = hypr_connect_event_socket();
+        if (ws->hypr_ev_fd < 0) {
+            bar_update_workspaces(ws->bar);
+        }
+    }
+
     bar_update_lua_plugins(ws->bar);
     render(ws);
 }
@@ -724,7 +978,15 @@ static void pointer_button(void *data, wl_pointer *,
             case CLICK_SUSPEND:
                 popup_create(ws, 2);
                 break;
-            case CLICK_HYPRCTL:
+            case CLICK_HYPRCTL: {
+                const char *dispatch = strstr(c->command, "dispatch");
+                if (dispatch) {
+                    hypr_send_command(dispatch);
+                } else {
+                    execute_command(c->command);
+                }
+                break;
+            }
             case CLICK_RUN:
                 execute_command(c->command);
                 break;
@@ -941,6 +1203,10 @@ int main() {
         timerfd_settime(ws.timer_fd, 0, &ts, nullptr);
     }
 
+    ws.hypr_ev_fd = hypr_connect_event_socket();
+    if (ws.hypr_ev_fd < 0)
+        fprintf(stderr, "warning: could not connect to hyprland event socket\n");
+
     struct sigaction sa = {};
     sa.sa_handler = handle_sighup;
     sigemptyset(&sa.sa_mask);
@@ -961,15 +1227,22 @@ int main() {
         }
     }
 
+    setup_plugin_watches(&ws);
+    init_window_tracking(&ws);
+
     while (ws.running) {
-        struct pollfd fds[3] = {
+        struct pollfd fds[5] = {
             { .fd = wl_display_get_fd(ws.display), .events = POLLIN },
             { .fd = ws.timer_fd, .events = POLLIN },
             { .fd = ws.inotify_fd, .events = POLLIN },
+            { .fd = ws.hypr_ev_fd, .events = POLLIN },
+            { .fd = ws.plugin_ifd, .events = POLLIN },
         };
         int nfds = 1;
         if (ws.timer_fd >= 0) nfds = 2;
         if (ws.inotify_fd >= 0) nfds = 3;
+        if (ws.hypr_ev_fd >= 0) nfds = 4;
+        if (ws.plugin_ifd >= 0) nfds = 5;
         bool has_display_data = false;
 
         while (wl_display_prepare_read(ws.display) != 0)
@@ -1000,6 +1273,36 @@ int main() {
             on_timer(&ws);
         }
 
+        if (ws.hypr_ev_fd >= 0 && (fds[3].revents & POLLIN)) {
+            if (hypr_read_events(ws.hypr_ev_fd, &ws)) {
+                bar_update_workspaces(ws.bar);
+                bar_update_workspace_names(ws.bar, ws.tracked_windows, ws.n_tracked_windows);
+                bar_update_lua_plugins(ws.bar);
+                render(&ws);
+            }
+        }
+
+        if (ws.plugin_ifd >= 0 && (fds[4].revents & POLLIN)) {
+            char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+            ssize_t len = read(ws.plugin_ifd, buf, sizeof(buf));
+            if (len > 0) {
+                bool ticked = false;
+                for (char *p = buf; p < buf + len; p += sizeof(struct inotify_event) + ((const struct inotify_event *)p)->len) {
+                    const auto *ev = (const struct inotify_event *)p;
+                    for (int i = 0; i < ws.bar->n_lua_plugins; i++) {
+                        if (ws.bar->lua_plugins[i].watch_wd == (int)ev->wd) {
+                            ws.bar->lua_plugins[i].last_check = 0;
+                            ticked = true;
+                        }
+                    }
+                }
+                if (ticked) {
+                    bar_update_lua_plugins(ws.bar);
+                    render(&ws);
+                }
+            }
+        }
+
         if (ws.inotify_fd >= 0 && (fds[2].revents & POLLIN)) {
             char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
             ssize_t len = read(ws.inotify_fd, buf, sizeof(buf));
@@ -1023,6 +1326,8 @@ check_reload:
 
     if (ws.timer_fd >= 0) close(ws.timer_fd);
     if (ws.inotify_fd >= 0) close(ws.inotify_fd);
+    if (ws.hypr_ev_fd >= 0) close(ws.hypr_ev_fd);
+    if (ws.plugin_ifd >= 0) close(ws.plugin_ifd);
     if (ws.popup.visible) popup_destroy(&ws);
     if (ws.tooltip.visible) tooltip_destroy(&ws);
     destroy_buffer(&ws);

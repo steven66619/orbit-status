@@ -363,6 +363,41 @@ void bar_render(Bar *bar, cairo_t *cr) {
     int clock_font_size = config_get_int(bar->cfg, "clock_font_size", 11);
     int pill_font_size = config_get_int(bar->cfg, "pill_font_size", 9);
 
+    int aw_width = 0;
+    int aw_visible = config_get_int(bar->cfg, "show_active_window", 1);
+    if (aw_visible && bar->active_window_title[0]) {
+        char aw_display[256];
+        if (bar->active_window_class[0])
+            snprintf(aw_display, sizeof(aw_display), " %s: %s ", bar->active_window_class, bar->active_window_title);
+        else
+            snprintf(aw_display, sizeof(aw_display), " %s ", bar->active_window_title);
+
+        char desc[64];
+        snprintf(desc, sizeof(desc), "%s %d", font_family, pill_font_size);
+        PangoLayout *al = pango_cairo_create_layout(cr);
+        PangoFontDescription *afd = pango_font_description_from_string(desc);
+        pango_layout_set_font_description(al, afd);
+        pango_font_description_free(afd);
+        pango_layout_set_text(al, aw_display, -1);
+        int aw_h;
+        pango_layout_get_pixel_size(al, &aw_width, &aw_h);
+
+        int max_aw = (pw_start - ws_start) / 3;
+        if (aw_width > max_aw) aw_width = max_aw;
+
+        pango_layout_set_width(al, aw_width * PANGO_SCALE);
+        pango_layout_set_ellipsize(al, PANGO_ELLIPSIZE_END);
+
+        cairo_set_source_rgba(cr, 0.5, 0.5, 0.6, 0.85);
+        int aw_y = (bar->height - aw_h) / 2;
+        cairo_move_to(cr, ws_start + 10, aw_y);
+        pango_cairo_show_layout(cr, al);
+
+        g_object_unref(al);
+        aw_width += 16;
+        cx += aw_width;
+    }
+
     if (show_clock) {
         char desc[64];
         snprintf(desc, sizeof(desc), "%s %d", font_family, clock_font_size);
@@ -581,6 +616,61 @@ void bar_clear_hover(Bar *bar) {
     bar->hovered_workspace = -1;
 }
 
+const char *prettify_class(const char *cls) {
+    if (!cls || !cls[0]) return cls;
+    static char buf[64];
+
+    const char *last = strrchr(cls, '.');
+    const char *base = last ? last + 1 : cls;
+
+    if (strcmp(base, "Alacritty") == 0 || strcmp(base, "Kitty") == 0 ||
+        strcmp(base, "foot") == 0 || strcmp(base, "Foot") == 0 ||
+        strcmp(base, "wezterm") == 0) {
+        if (base[0] >= 'a' && base[0] <= 'z') {
+            snprintf(buf, sizeof(buf), "%c%s", base[0] - 32, base + 1);
+        } else {
+            snprintf(buf, sizeof(buf), "%s", base);
+        }
+        return buf;
+    }
+
+    char tmp[64];
+    snprintf(tmp, sizeof(tmp), "%s", base);
+
+    bool cap_next = true;
+    int o = 0;
+    for (int i = 0; tmp[i] && o < (int)sizeof(buf) - 2; i++) {
+        char c = tmp[i];
+        if (c == '-' || c == '_') {
+            buf[o++] = ' ';
+            cap_next = true;
+        } else if (cap_next) {
+            buf[o++] = (c >= 'a' && c <= 'z') ? c - 32 : c;
+            cap_next = false;
+        } else {
+            buf[o++] = c;
+        }
+    }
+    buf[o] = '\0';
+
+    return buf;
+}
+
+void bar_update_workspace_names(Bar *bar, TrackedWindow *windows, int n_windows) {
+    for (int w = 0; w < bar->n_workspaces; w++) {
+        bar->workspaces[w].name[0] = '\0';
+        int ws_id = bar->workspaces[w].id;
+
+        for (int i = 0; i < n_windows; i++) {
+            if (windows[i].workspace_id == ws_id) {
+                const char *pretty = prettify_class(windows[i].cls);
+                snprintf(bar->workspaces[w].name, sizeof(bar->workspaces[w].name), "%s", pretty);
+                break;
+            }
+        }
+    }
+}
+
 void bar_update_workspaces(Bar *bar) {
     FILE *fp = popen("hyprctl workspaces 2>/dev/null", "r");
     if (!fp) { bar->n_workspaces = 0; return; }
@@ -615,6 +705,18 @@ void bar_update_workspaces(Bar *bar) {
         }
     }
     pclose(fp);
+}
+
+void bar_set_active_window(Bar *bar, const char *cls, const char *title) {
+    if (!bar) return;
+    if (cls)
+        strncpy(bar->active_window_class, cls, sizeof(bar->active_window_class) - 1);
+    else
+        bar->active_window_class[0] = '\0';
+    if (title)
+        strncpy(bar->active_window_title, title, sizeof(bar->active_window_title) - 1);
+    else
+        bar->active_window_title[0] = '\0';
 }
 
 void bar_update_lua_plugins(Bar *bar) {

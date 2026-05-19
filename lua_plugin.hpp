@@ -16,8 +16,9 @@ struct LuaPlugin {
     char output[MAX_LUA_PLUGIN_OUTPUT];
     time_t last_check;
     int interval;
+    int watch_wd;
 
-    LuaPlugin() : type(PLUGIN_LUA), state(nullptr), last_check(0), interval(5) {
+    LuaPlugin() : type(PLUGIN_LUA), state(nullptr), last_check(0), interval(5), watch_wd(-1) {
         path[0] = '\0';
         cmd[0] = '\0';
         output[0] = '\0';
