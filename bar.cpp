@@ -264,16 +264,25 @@ static void draw_workspaces(Bar *bar, cairo_t *cr, int h, int x) {
     }
 
     PangoLayout *layout = pango_cairo_create_layout(cr);
-    PangoFontDescription *font = pango_font_description_from_string("Sans Bold 12");
+    const char *font_family = config_get(bar->cfg, "font_family", "Sans");
+    int ws_font_size = config_get_int(bar->cfg, "workspace_font_size", 12);
+    char font_desc[64];
+    snprintf(font_desc, sizeof(font_desc), "%s Bold %d", font_family, ws_font_size);
+    PangoFontDescription *font = pango_font_description_from_string(font_desc);
     pango_layout_set_font_description(layout, font);
     pango_font_description_free(font);
 
     for (int i = 0; i < bar->n_workspaces; i++) {
         int id = bar->workspaces[i].id;
-        char num[8];
-        snprintf(num, sizeof(num), "%d", id);
 
-        pango_layout_set_text(layout, num, -1);
+        const char *display = bar->workspaces[i].name[0] ? bar->workspaces[i].name : nullptr;
+        char num[8];
+        if (!display) {
+            snprintf(num, sizeof(num), "%d", id);
+            display = num;
+        }
+
+        pango_layout_set_text(layout, display, -1);
         int tw, th;
         pango_layout_get_pixel_size(layout, &tw, &th);
 
@@ -367,9 +376,10 @@ void bar_render(Bar *bar, cairo_t *cr) {
     int aw_visible = config_get_int(bar->cfg, "show_active_window", 1);
     if (aw_visible && bar->active_window_title[0]) {
         char aw_display[256];
-        if (bar->active_window_class[0])
-            snprintf(aw_display, sizeof(aw_display), " %s: %s ", bar->active_window_class, bar->active_window_title);
-        else
+        if (bar->active_window_class[0]) {
+            const char *pretty = prettify_class(bar->active_window_class);
+            snprintf(aw_display, sizeof(aw_display), " %s ", pretty);
+        } else
             snprintf(aw_display, sizeof(aw_display), " %s ", bar->active_window_title);
 
         char desc[64];

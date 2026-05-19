@@ -204,8 +204,11 @@ static void popup_render(WlStatus *ws) {
     draw_rounded_rect(cr, 0, 0, w, h, 8);
     cairo_stroke(cr);
 
+    const char *ff = config_get(ws->cfg, "font_family", "Sans");
+    char popup_title_font[64];
+    snprintf(popup_title_font, sizeof(popup_title_font), "%s Bold 13", ff);
     PangoLayout *lay = pango_cairo_create_layout(cr);
-    PangoFontDescription *fd = pango_font_description_from_string("Sans Bold 13");
+    PangoFontDescription *fd = pango_font_description_from_string(popup_title_font);
     pango_layout_set_font_description(lay, fd);
     pango_font_description_free(fd);
     const char *labels[] = {"Power Off", "Reboot", "Suspend"};
@@ -232,7 +235,9 @@ static void popup_render(WlStatus *ws) {
     draw_rounded_rect(cr, cancel_x, btn_y, btn_w, btn_h, 5);
     cairo_fill(cr);
 
-    PangoFontDescription *fb = pango_font_description_from_string("Sans Bold 11");
+    char btn_font[64];
+    snprintf(btn_font, sizeof(btn_font), "%s Bold 11", ff);
+    PangoFontDescription *fb = pango_font_description_from_string(btn_font);
     PangoLayout *lc = pango_cairo_create_layout(cr);
     pango_layout_set_font_description(lc, fb);
     pango_layout_set_text(lc, "Confirm", -1);
@@ -405,8 +410,11 @@ static void tooltip_layer_surface_configure(void *data,
         cairo_set_source_rgba(cr, 0.10, 0.10, 0.18, 0.96);
         cairo_fill(cr);
 
+        const char *tip_ff = config_get(ws->cfg, "font_family", "Sans");
+        char tip_font[64];
+        snprintf(tip_font, sizeof(tip_font), "%s 10", tip_ff);
         PangoLayout *lay = pango_cairo_create_layout(cr);
-        PangoFontDescription *fdesc = pango_font_description_from_string("Sans 10");
+        PangoFontDescription *fdesc = pango_font_description_from_string(tip_font);
         pango_layout_set_font_description(lay, fdesc);
         pango_font_description_free(fdesc);
         pango_layout_set_text(lay, ws->tooltip.text, -1);

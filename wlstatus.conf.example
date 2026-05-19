@@ -27,6 +27,7 @@
 # show_hyperion = 1
 # show_hyperion_logo = 1
 # hyperion_color = 0.92 0.72 0.0 1.0
+# workspace_font_size = 12
 
 # === Clock ===
 # show_clock = 1
