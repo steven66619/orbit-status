@@ -1,1 +1,0 @@
-wlstatus.files.tar.zst.sig

@@ -1,1 +1,0 @@
-wlstatus.db.tar.zst.sig
