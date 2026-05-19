@@ -121,7 +121,7 @@ case "$TARGET" in
                 make install PREFIX=/usr DESTDIR=/tmp/pkgdest &&
                 cd /tmp/pkgdest &&
                 xbps-create -A x86_64 \
-                    -n wlstatus-1.1_2 \
+                    -n wlstatus-1.2_1 \
                     -s 'Lightweight Wayland status bar with Lua plugin support' \
                     --dependencies 'wayland,cairo,pango,glib2,lua54' \
                     --homepage 'https://github.com/steven66619/wlstatus-new' \

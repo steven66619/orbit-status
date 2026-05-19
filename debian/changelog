@@ -1,3 +1,13 @@
+wlstatus (1.2-1) unstable; urgency=medium
+
+  * Hyprland IPC: real-time workspace/window events via event socket.
+  * Track windows per workspace, display pretty workspace names.
+  * Show active window title in bar (configurable via show_active_window).
+  * Inotify-based event-driven Lua plugin updates for battery/brightness/network.
+  * Workspace switching uses Hyprland command socket directly.
+
+ -- steven66619 <ste@example.com>  Tue, 19 May 2026 22:00:00 +0000
+
 wlstatus (1.1-2) unstable; urgency=medium
 
   * Add bundled Lua plugin for weather.

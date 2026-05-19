@@ -1,8 +1,8 @@
 %global _lto_cflags %{nil}
 
 Name: wlstatus
-Version: 1.1
-Release: 2%{?dist}
+Version: 1.2
+Release: 1%{?dist}
 Summary: Lightweight Wayland status bar with Lua plugin support
 
 License: MIT
@@ -38,6 +38,9 @@ make install PREFIX=/usr DESTDIR=%{buildroot}
 %{_datadir}/wlstatus/plugins/*.lua
 
 %changelog
+* Tue May 19 2026 steven66619 <ste@example.com> - 1.2-1
+- Hyprland IPC, window tracking, inotify plugin watches, active window title
+
 * Sun May 17 2026 steven66619 <ste@example.com> - 1.1-2
 - Add weather Lua plugin
 
