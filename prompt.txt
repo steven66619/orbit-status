@@ -1,0 +1,4 @@
+/mode build
+@build.md @main.cpp @lua_plugin.cpp @Makefile
+
+Using the rules and dependencies mapped out in build.md, execute a complete modern C++17 refactor of main.cpp and lua_plugin.cpp. Eliminate all legacy C file pointers, raw pointers, and archaic loops. Implement the #ifdef BUILD_WAYLAND and #ifdef BUILD_XORG conditional preprocessor targets, writing the event-driven Xlib _XMONAD_LOG listener block for Xorg. Update the Makefile with the distinct target blocks. Output the final, fully written files immediately without placeholders or chatter.

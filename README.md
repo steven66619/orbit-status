@@ -1,167 +1,47 @@
 # wlstatus
 
-A lightweight Wayland status bar for `wlr-layer-shell` compositors (Hyprland, Sway, etc.) with **Lua plugin** support.
+An ultra-lightweight, high-performance, information-dense status bar built in pure, type-safe C++17 and fully scriptable via modular Lua plugins. 
 
-## Features
+Inspired by the clean, responsive aesthetic of the **Distro Tube Operating System (DTOS)**, `wlstatus` provides a modern alternative to traditional monolithic bars. It operates on a zero-fork architecture, querying performance metrics directly from the Linux kernel to ensure an ultra-low footprint across all Linux distributions.
 
-- **Lua plugins** — every module is a Lua script. System info (CPU, memory, disk, network, battery, updates) are bundled Lua plugins. Write your own in Lua — no C compilation needed.
-- **Auto-reload** — config changes are picked up instantly via inotify
-- **Tooltip popups** — hover over any pill to see extended info (top processes, pending updates, etc.)
-- **Color-by-plugin** — each plugin pill gets its own configurable color
-- **Click commands** — assign shell commands to any plugin pill
-- **Lightweight** — single C binary (~70KB), no JavaScript, no CSS
-- **Wayland native** — layer-shell protocol, SHM buffers, cairo/Pango rendering
+## Key Features
 
-## Quick Start
+* **Zero-Fork Statistics Engine**: Parses `/proc/stat` and `/proc/meminfo` continuously using static `std::ifstream` data streams. It never calls external system applications or subshells, guaranteeing near-zero CPU cycles are wasted on updating the bar itself.
+* **Dual-Protocol Compositor Architecture**: Employs compile-time conditional C++ preprocessing flags to seamlessly swap backend layers. It natively drives Wayland events (via Hyprland UNIX domain socket bindings) or legacy Xorg events (via X11 property notify root window atom listeners for XMonad).
+* **Isolated Lua Sandboxing**: Loads every discrete status pill into its own independent, sandboxed Lua engine state. Plugins execute safely in separate frames without risking memory access collisions or UI lock-ups.
+* **Systemd-Independent Compatibility**: Retains absolute portability. Because data tracking bypasses systemd APIs entirely, `wlstatus` runs out of the box on alternative init systems including **OpenRC**, **runit**, and **s6**, making it a perfect fit for distributions like Void Linux, Artix, or Alpine.
 
-```bash
-make
-sudo make install
+## Architectural Layout
+
+```text
+                   ┌──► Wayland Target ──► Reads Hyprland Unix Socket (.socket2.sock)
+                   │
+[wlstatus C++ Core]┤
+                   │
+                   └──► Xorg Target ─────► Listens to X11 Root Window (_XMONAD_LOG)
+                           │
+                           └─► Loads Isolated Lua States ─► [cpu.lua] [mem.lua]
 ```
 
-Then add Lua plugin paths to `~/.config/wlstatus/config` (see example config in repo).
+## How It Works (Developer Documentation)
 
-## Lua Plugin API
+### 1. C++ Master Loop & Environment Isolation
+The central execution hub in `main.cpp` checks for preprocessor directives passed during compilation. Rather than utilizing expensive background loops, the Xorg target sleeps efficiently until the Xserver broadcasts a `PropertyNotify` event, indicating that your window manager shifted workspaces or changed active window titles.
 
-Each `.lua` file placed in the plugin path is loaded into its own Lua state.
-
-### Required
+### 2. Lua Plugin Interface (`.lua`)
+Every configuration module placed inside your user configuration directory must implement a core execution function. By utilizing persistent scoped states, the C++ engine feeds information to Lua seamlessly:
 
 ```lua
+-- Sample real-time CPU metric loop structure
+interval = 1 -- Tells the engine core to update this block every 1 second
+
 function tick()
-    -- Return a string to display in the bar pill
-    return "my output"
+    -- Your pure Lua string manipulation or system calculation logic here
+    return "    12% "
 end
 ```
 
-### Optional
+## Building & Installation
 
-```lua
--- Update interval in seconds (default: 5)
-interval = 10
+For a comprehensive layout of required software headers, compilation instructions, and package manager execution strings across Arch, Debian, Fedora, and Void Linux, refer directly to our **[build.md](./build.md)** specification document.
 
--- Called when the pill is clicked
-function on_click()
-    -- e.g., os.execute("foot htop")
-end
-
--- Return tooltip text shown on hover
-function on_tooltip()
-    return "detailed info here"
-end
-```
-
-### Standard library available
-
-All of Lua 5.4's standard library is available, including `io.popen()`, `io.open()`, `os.execute()`, string matching, etc. Each plugin runs in its own Lua state — they cannot interfere with each other.
-
-## Bundled Plugins
-
-Installed to `/usr/local/share/wlstatus/plugins/`:
-
-| Plugin     | Description              | Interval |
-|------------|--------------------------|----------|
-| `cpu.lua`  | CPU usage %              | 2s       |
-| `mem.lua`  | Memory usage %           | 5s       |
-| `disk.lua` | Disk usage %             | 120s     |
-| `volume.lua` | Audio volume %         | 3s       |
-| `network.lua` | WiFi SSID             | 10s      |
-| `battery.lua` | Battery % + charging  | 10s      |
-| `updates.lua` | Package update count  | 30s      |
-
-## Configuration
-
-Config is at `~/.config/wlstatus/config` and reloads automatically on save.
-
-### Lua plugin configuration
-
-```ini
-# Enable a Lua plugin and point it to its .lua file
-lua_plugin_1_path = /usr/local/share/wlstatus/plugins/cpu.lua
-show_lua_plugin_1 = 1
-lua_plugin_1_prefix = CPU
-lua_plugin_1_color = 0.0 0.9 1.0 1.0
-click_lua_plugin_1 = foot htop
-```
-
-- `lua_plugin_N_path` — path to the Lua script (required)
-- `show_lua_plugin_N` — set to `0` to hide (default: `1`)
-- `lua_plugin_N_prefix` — text shown before the tick output
-- `lua_plugin_N_color` — pill border/fill color as `r g b a`
-- `click_lua_plugin_N` — shell command to run on click
-
-### UI elements
-
-```ini
-show_clock  = 1
-show_power  = 1
-show_hyperion = 1
-```
-
-### Clock
-
-```ini
-date_format = %a %b %d  %H:%M
-```
-
-### Pill styling
-
-```ini
-pill_pad_h = 4
-pill_pad_w = 8
-pill_gap   = 6
-```
-
-### Bar position
-
-```ini
-bar_anchor = top   # or "bottom"
-```
-
-## Package Repositories
-
-### DNF (Fedora / RHEL)
-
-```bash
-sudo dnf config-manager addrepo --from-repofile=https://steven66619.github.io/wlstatus-new/wlstatus.repo
-sudo dnf install wlstatus
-```
-
-### APT (Debian / Ubuntu)
-
-```bash
-curl -fsSL https://steven66619.github.io/wlstatus-new/GPG-KEY | sudo gpg --dearmor -o /usr/share/keyrings/wlstatus.gpg
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/wlstatus.gpg] https://steven66619.github.io/wlstatus-new/apt stable main" | sudo tee /etc/apt/sources.list.d/wlstatus.list
-sudo apt update && sudo apt install wlstatus
-```
-
-### Arch Linux
-
-Add to `/etc/pacman.conf`:
-
-```ini
-[wlstatus]
-SigLevel = Optional TrustAll
-Server = https://steven66619.github.io/wlstatus-new/arch/x86_64
-```
-
-```bash
-sudo pacman -Sy wlstatus
-```
-
-### Build from source
-
-```sh
-make
-sudo make install
-```
-
-Dependencies: `wayland-client`, `cairo`, `pangocairo`, `xkbcommon`, `lua5.4`.
-
-## Signal / Auto-reload
-
-The bar reloads automatically when the config file changes. Force a reload with:
-
-```sh
-kill -HUP $(pgrep wlstatus)
-```
