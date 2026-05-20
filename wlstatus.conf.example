@@ -82,6 +82,13 @@
 # === Tooltips ===
 # tooltip_cmd =             # if empty, built-in tooltips are used per module
 
+# === Lua Plugins (up to 12) ===
+# lua_plugin_1_path = ~/.config/wlstatus/plugins/workspaces.lua
+# lua_plugin_1_interval = 1
+# lua_plugin_1_prefix = WS
+# click_lua_plugin_1 =
+# lua_plugin_1_color = 0.6 1.0 0.6 1.0
+#
 # === Custom Modules (up to 4) ===
 # show_custom_1 = 0
 # custom_1_cmd =

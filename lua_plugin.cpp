@@ -8,6 +8,7 @@ extern "C" {
 
 #include <array>
 #include <string>
+#include <vector>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +20,16 @@ extern "C" {
 #include <sys/wait.h>
 #include <poll.h>
 #include <fcntl.h>
+
+#if defined(BUILD_XORG)
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
+
+static Display* g_x11_display = nullptr;
+static Window g_x11_root = 0;
+static Atom g_xmonad_log_atom = 0;
+static Atom g_utf8_string_atom = 0;
+#endif
 
 namespace {
 
@@ -46,6 +57,15 @@ bool do_tick_fork(LuaPlugin* p) {
                 ::pclose(f);
             }
         } else {
+#if defined(BUILD_XORG)
+            // Forked child inherits parent's X11 fd.  Close it and clear the
+            // display pointer so get_xmonad_workspaces() returns empty table
+            // instead of issuing X11 requests that corrupt the parent's state.
+            if (g_x11_display) {
+                ::close(ConnectionNumber(g_x11_display));
+                g_x11_display = nullptr;
+            }
+#endif
             lua_State* L = static_cast<lua_State*>(p->state);
             lua_getglobal(L, "tick");
             if (lua_isfunction(L, -1)) {
@@ -97,12 +117,78 @@ bool do_tick_fork(LuaPlugin* p) {
 
 } // anonymous namespace
 
+void lua_plugin_set_x11_display(void* display, unsigned long root) {
+#if defined(BUILD_XORG)
+    g_x11_display = static_cast<Display*>(display);
+    g_x11_root = static_cast<Window>(root);
+    g_xmonad_log_atom = XInternAtom(g_x11_display, "_XMONAD_LOG", False);
+    g_utf8_string_atom = XInternAtom(g_x11_display, "UTF8_STRING", False);
+    int x11_fd = ConnectionNumber(g_x11_display);
+    int fl = ::fcntl(x11_fd, F_GETFD);
+    if (fl != -1) ::fcntl(x11_fd, F_SETFD, fl | FD_CLOEXEC);
+#else
+    (void)display;
+    (void)root;
+#endif
+}
+
+#if defined(BUILD_XORG)
+static int l_xmonad_workspaces(lua_State* L) {
+    lua_newtable(L);
+    if (!g_x11_display) return 1;
+
+    Atom actual_type;
+    int actual_format;
+    unsigned long nitems, bytes_after;
+    unsigned char* prop = nullptr;
+
+    if (XGetWindowProperty(g_x11_display, g_x11_root, g_xmonad_log_atom,
+            0, 4096, False, g_utf8_string_atom,
+            &actual_type, &actual_format,
+            &nitems, &bytes_after,
+            &prop) == Success && prop) {
+        std::string log(reinterpret_cast<char*>(prop), nitems);
+        XFree(prop);
+
+        int idx = 1;
+        std::size_t pos = 0;
+        while (pos < log.size()) {
+            while (pos < log.size() && log[pos] == ' ')
+                pos++;
+            if (pos >= log.size()) break;
+            std::size_t start = pos;
+            while (pos < log.size() && log[pos] != ' ')
+                pos++;
+            lua_pushinteger(L, idx++);
+            lua_pushlstring(L, log.c_str() + start, pos - start);
+            lua_settable(L, -3);
+        }
+    }
+    return 1;
+}
+#else
+static int l_xmonad_workspaces_stub(lua_State* L) {
+    lua_newtable(L);
+    return 1;
+}
+#endif
+
+void lua_plugin_register_native_functions(lua_State* L) {
+#if defined(BUILD_XORG)
+    lua_pushcfunction(L, l_xmonad_workspaces);
+#else
+    lua_pushcfunction(L, l_xmonad_workspaces_stub);
+#endif
+    lua_setglobal(L, "get_xmonad_workspaces");
+}
+
 int lua_plugin_init(LuaPlugin* p, const char* path) {
     p->type = PLUGIN_LUA;
     auto* L = luaL_newstate();
     if (!L) return -1;
     p->state = L;
     luaL_openlibs(L);
+    lua_plugin_register_native_functions(L);
 
     std::snprintf(p->path, sizeof(p->path), "%s", path);
     p->cmd[0] = '\0';

@@ -33,4 +33,7 @@ const char *lua_plugin_get_tooltip(LuaPlugin *p);
 void lua_plugin_call_onclick(LuaPlugin *p);
 void lua_plugin_call_onscroll(LuaPlugin *p, int direction);
 
+void lua_plugin_register_native_functions(void *L);
+void lua_plugin_set_x11_display(void *display, unsigned long root);
+
 #endif

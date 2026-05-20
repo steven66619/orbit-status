@@ -1736,6 +1736,23 @@ static int xorg_main() {
     xc.cfg = config_load(config_path());
     xc.height = config_get_int(xc.cfg, "bar_height", BAR_HEIGHT);
 
+    // Custom X11 error handler to print and swallow non-fatal errors.
+    // The default handler would print and then abort on some systems.
+    auto xerr = [](Display* d, XErrorEvent* e) -> int {
+        char buf[128] = {};
+        XGetErrorText(d, e->error_code, buf, sizeof(buf));
+        std::fprintf(stderr, "X11 error: request=%d minor=%d code=%d (%s)\n",
+            e->request_code, e->minor_code, e->error_code, buf);
+        return 0;
+    };
+    XSetErrorHandler(xerr);
+
+    auto xioerr = [](Display* d) -> int {
+        std::fprintf(stderr, "X11 I/O error: connection lost\n");
+        return 0;
+    };
+    XSetIOErrorHandler(xioerr);
+
     xc.display = XOpenDisplay(nullptr);
     if (!xc.display) {
         std::fprintf(stderr, "failed to connect to X display\n");
@@ -1765,16 +1782,19 @@ static int xorg_main() {
     XStoreName(xc.display, xc.win, "wlstatus");
     XMapWindow(xc.display, xc.win);
 
-    // Create cairo surface for X11 rendering
+    // Create cairo surface for X11 rendering.
+    XWindowAttributes root_attr;
+    XGetWindowAttributes(xc.display, xc.root, &root_attr);
     xc.surface = cairo_xlib_surface_create(xc.display, xc.win,
-        DefaultVisual(xc.display, xc.screen), xc.width, xc.height);
+        root_attr.visual, xc.width, xc.height);
     cairo_xlib_surface_set_size(xc.surface, xc.width, xc.height);
     xc.cr = cairo_create(xc.surface);
 
     // Initialize bar
+    lua_plugin_set_x11_display(xc.display, xc.root);
     xc.bar = bar_create(xc.width, xc.height, xc.cfg);
 
-    // Set up _XMONAD_LOG atom listener
+    // Set up _XMONAD_LOG atom listener.
     xc.xmonad_log_atom = XInternAtom(xc.display, "_XMONAD_LOG", False);
     XSelectInput(xc.display, xc.root, PropertyChangeMask);
 
@@ -1851,6 +1871,11 @@ static int xorg_main() {
                 }
                 continue;
             }
+            break;
+        }
+
+        if (fds[0].revents & (POLLERR | POLLHUP)) {
+            xc.running = false;
             break;
         }
 
