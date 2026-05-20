@@ -65,6 +65,7 @@ const char* config_path() {
     return buf.data();
 }
 
+#if defined(BUILD_WAYLAND)
 void execute_command(const char* cmd) {
     pid_t pid = ::fork();
     if (pid == 0) {
@@ -72,6 +73,7 @@ void execute_command(const char* cmd) {
         ::_exit(1);
     }
 }
+#endif
 
 } // anonymous namespace
 
@@ -1446,6 +1448,8 @@ struct X11Bar final {
     Window root = 0;
     Window win = 0;
     Atom xmonad_log_atom = 0;
+    Atom net_client_list_atom = 0;
+    Atom net_wm_desktop_atom = 0;
     int width = 1920;
     int height = BAR_HEIGHT;
     bool running = false;
@@ -1459,6 +1463,9 @@ struct X11Bar final {
     int timer_fd = -1;
     int inotify_fd = -1;
     int plugin_ifd = -1;
+
+    TrackedWindow tracked_windows[MAX_TRACKED_WINDOWS]{};
+    int n_tracked_windows = 0;
 
     X11Bar() = default;
 
@@ -1547,21 +1554,13 @@ struct X11Bar final {
         case PropertyNotify:
             if (ev.xproperty.atom == xmonad_log_atom &&
                 ev.xproperty.state == PropertyNewValue) {
-                Atom actual_type;
-                int actual_format;
-                unsigned long nitems, bytes_after;
-                unsigned char* data = nullptr;
-
-                if (XGetWindowProperty(display, root, xmonad_log_atom,
-                        0, 4096, False, XA_STRING,
-                        &actual_type, &actual_format,
-                        &nitems, &bytes_after,
-                        &data) == Success && data) {
-                    parse_xmonad_log(
-                        std::string(reinterpret_cast<const char*>(data)));
-                    XFree(data);
-                    render();
-                }
+                read_xmonad_log();
+                query_client_windows();
+                render();
+            } else if (ev.xproperty.atom == net_client_list_atom &&
+                       ev.xproperty.state == PropertyNewValue) {
+                query_client_windows();
+                render();
             }
             break;
 
@@ -1639,10 +1638,82 @@ struct X11Bar final {
         }
     }
 
+    void read_xmonad_log() {
+        Atom actual_type;
+        int actual_format;
+        unsigned long nitems, bytes_after;
+        unsigned char* log_data = nullptr;
+        if (XGetWindowProperty(display, root, xmonad_log_atom,
+                0, 4096, False, XA_STRING,
+                &actual_type, &actual_format,
+                &nitems, &bytes_after,
+                &log_data) == Success && log_data) {
+            std::string log_str(reinterpret_cast<const char*>(log_data), nitems);
+            if (!log_str.empty() && log_str[0] != '\0')
+                parse_xmonad_log(log_str);
+            XFree(log_data);
+        }
+        // If no workspaces parsed, set defaults
+        if (bar->n_workspaces == 0) {
+            for (int i = 0; i < 9 && i < MAX_WORKSPACES; i++) {
+                bar->workspaces[i].id = i + 1;
+                bar->workspaces[i].active = (i == 0);
+                std::snprintf(bar->workspaces[i].name, sizeof(bar->workspaces[i].name), "%d", i + 1);
+                bar->n_workspaces++;
+            }
+        }
+    }
+
     void on_timer() {
         if (!bar || !running) return;
+
+        read_xmonad_log();
+        query_client_windows();
         bar_update_lua_plugins(bar);
         render();
+    }
+
+    void query_client_windows() {
+        n_tracked_windows = 0;
+        Atom actual_type;
+        int actual_format;
+        unsigned long nitems, bytes_after;
+        unsigned char* data = nullptr;
+
+        if (XGetWindowProperty(display, root, net_client_list_atom,
+                0, 16384, False, 0L,
+                &actual_type, &actual_format,
+                &nitems, &bytes_after,
+                &data) == Success && data && actual_format == 32) {
+
+            auto* windows = reinterpret_cast< ::Window*>(data);
+            for (unsigned long i = 0; i < nitems && n_tracked_windows < MAX_TRACKED_WINDOWS; i++) {
+                ::Window w = windows[i];
+
+                unsigned char* ddata = nullptr;
+                if (XGetWindowProperty(display, w, net_wm_desktop_atom,
+                        0, 1, False, 0L,
+                        &actual_type, &actual_format,
+                        &nitems, &bytes_after,
+                        &ddata) == Success && ddata && actual_format == 32 && nitems > 0) {
+
+                    long desktop = *reinterpret_cast<long*>(ddata);
+                    XFree(ddata);
+
+                    XClassHint ch{};
+                    if (XGetClassHint(display, w, &ch) && ch.res_class) {
+                        auto& tw = tracked_windows[n_tracked_windows++];
+                        std::snprintf(tw.address, sizeof(tw.address), "%lx",
+                            static_cast<unsigned long>(w));
+                        tw.workspace_id = static_cast<int>(desktop + 1);
+                        std::snprintf(tw.cls, sizeof(tw.cls), "%s", ch.res_class);
+                        XFree(ch.res_name);
+                        XFree(ch.res_class);
+                    }
+                }
+            }
+            XFree(data);
+        }
     }
 
     void reload() {
@@ -1652,6 +1723,8 @@ struct X11Bar final {
         cfg = config_load(config_path());
         bar = bar_create(width, height, cfg);
         setup_plugin_watches();
+        query_client_windows();
+        bar_update_workspace_names(bar, tracked_windows, n_tracked_windows);
         bar_update_lua_plugins(bar);
         render();
     }
@@ -1705,20 +1778,12 @@ static int xorg_main() {
     xc.xmonad_log_atom = XInternAtom(xc.display, "_XMONAD_LOG", False);
     XSelectInput(xc.display, xc.root, PropertyChangeMask);
 
-    // Read initial _XMONAD_LOG state
-    Atom actual_type;
-    int actual_format;
-    unsigned long nitems, bytes_after;
-    unsigned char* initial_data = nullptr;
-    if (XGetWindowProperty(xc.display, xc.root, xc.xmonad_log_atom,
-            0, 4096, False, XA_STRING,
-            &actual_type, &actual_format,
-            &nitems, &bytes_after,
-            &initial_data) == Success && initial_data) {
-        xc.parse_xmonad_log(
-            std::string(reinterpret_cast<const char*>(initial_data)));
-        XFree(initial_data);
-    }
+    // Read initial _XMONAD_LOG state (or set defaults)
+    xc.net_client_list_atom = XInternAtom(xc.display, "_NET_CLIENT_LIST", False);
+    xc.net_wm_desktop_atom = XInternAtom(xc.display, "_NET_WM_DESKTOP", False);
+
+    xc.read_xmonad_log();
+    xc.query_client_windows();
 
     xc.running = true;
 
