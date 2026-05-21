@@ -9,7 +9,7 @@
 #define BAR_HEIGHT 38
 #define BAR_PADDING 8
 #define MAX_WORKSPACES 10
-#define MAX_LUA_PLUGINS 16
+#define MAX_LUA_PLUGINS 12
 #define MAX_TRACKED_WINDOWS 64
 
 enum ClickAction {
