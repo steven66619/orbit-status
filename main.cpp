@@ -6,7 +6,6 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <ctime>
-#include <wayland-client.h>
 #include <poll.h>
 #include <sys/timerfd.h>
 #include <sys/inotify.h>
@@ -15,181 +14,400 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <cctype>
-#ifdef __cplusplus
-#define namespace namespace_
-#endif
-#include "wlr-layer-shell-unstable-v1-client.h"
-#ifdef __cplusplus
-#undef namespace
-#endif
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
+#include <X11/Xutil.h>
+#include <X11/keysym.h>
+#include <X11/extensions/Xcomposite.h>
 #include <cairo.h>
+#include <cairo-xlib.h>
 #include <pango/pangocairo.h>
-#include <xkbcommon/xkbcommon.h>
 #include "bar.hpp"
 #include "config.hpp"
 
-struct WlStatus {
-    wl_display *display = nullptr;
-    wl_compositor *compositor = nullptr;
-    wl_shm *shm = nullptr;
-    zwlr_layer_shell_v1 *layer_shell = nullptr;
-    zwlr_layer_surface_v1 *layer_surface = nullptr;
-    wl_surface *surface = nullptr;
-    wl_seat *seat = nullptr;
-    wl_pointer *pointer = nullptr;
-    wl_keyboard *keyboard = nullptr;
-    xkb_context *xkb_ctx = nullptr;
-    struct xkb_keymap *xkb_kmap = nullptr;
-    struct xkb_state *xkb_kstate = nullptr;
+#define SYSTEM_TRAY_REQUEST_DOCK 0
+#define SYSTEM_TRAY_BEGIN_MESSAGE 1
+#define SYSTEM_TRAY_CANCEL_MESSAGE 2
+#define XEMBED_EMBEDDED_NOTIFY 0
+#define XEMBED_WINDOW_ACTIVATE 1
+#define XEMBED_FOCUS_IN 4
+#define XEMBED_MAPPED 1 << 0
 
-    wl_buffer *buffer = nullptr;
+#define MAX_TRAY_CLIENTS 16
+
+struct TrayClient {
+    Window win;
+    int x, y, w, h;
+    bool mapped;
+    Pixmap pixmap;
+    cairo_surface_t *surface;
+};
+
+struct WlStatus {
+    Display *dpy = nullptr;
+    Window win = 0;
+    int screen = 0;
+    GC gc = 0;
+    int width = 0, height = 0;
+
     cairo_surface_t *cairo_surface = nullptr;
     cairo_t *cr = nullptr;
-    void *shm_data = nullptr;
-    int width = 0, height = 0;
 
     Bar *bar = nullptr;
     Config *cfg = nullptr;
-    TrackedWindow tracked_windows[MAX_TRACKED_WINDOWS];
-    int n_tracked_windows = 0;
-    bool configured = false;
     bool running = false;
-    uint32_t configure_serial = 0;
-    int pointer_x = 0, pointer_y = 0;
-    wl_surface *current_pointer_surface = nullptr;
 
     int timer_fd = -1;
     int inotify_fd = -1;
-    int plugin_ifd = -1;
-    int hypr_ev_fd = -1;
+
+    int pointer_x = 0, pointer_y = 0;
+
+    Atom tray_selection;
+    Atom tray_opcode;
+    Atom tray_dock_request;
+    Atom xembed_info;
+    Atom manager_atom;
+    Window tray_win = 0;
+    TrayClient tray_clients[MAX_TRAY_CLIENTS];
+    int n_tray_clients = 0;
+    int tray_icon_size = 24;
+
+    int power_hovered = -1;
+    int hovered_workspace = -1;
 
     struct {
-        wl_surface *surface = nullptr;
-        zwlr_layer_surface_v1 *layer_surface = nullptr;
-        wl_buffer *buffer = nullptr;
-        cairo_surface_t *cairo_surface = nullptr;
-        cairo_t *cr = nullptr;
-        void *shm_data = nullptr;
+        Window win = 0;
         int width = 0, height = 0;
-        bool visible = false, configured = false;
+        bool visible = false;
         char text[512]{};
         int hovered_clickable = -1;
-        int hover_x = 0, hover_y = 0;
     } tooltip;
 
     struct {
-        wl_surface *surface = nullptr;
-        zwlr_layer_surface_v1 *layer_surface = nullptr;
-        wl_buffer *buffer = nullptr;
-        cairo_surface_t *cairo_surface = nullptr;
-        cairo_t *cr = nullptr;
-        void *shm_data = nullptr;
+        Window win = 0;
         int width = 0, height = 0;
-        bool visible = false, configured = false;
+        bool visible = false;
         int action = 0;
         int hovered_btn = -1;
         int confirm_btn_x = 0, confirm_btn_y = 0, confirm_btn_w = 0, confirm_btn_h = 0;
         int cancel_btn_x = 0, cancel_btn_y = 0, cancel_btn_w = 0, cancel_btn_h = 0;
     } popup;
+
+    Pixmap back_pixmap = 0;
+    cairo_surface_t *back_cairo_surface = nullptr;
+    cairo_t *back_cr = nullptr;
 };
 
-static int create_shm_fd(size_t size) {
-    int fd = memfd_create("wlstatus", MFD_CLOEXEC);
-    if (fd < 0) return -1;
-    if (ftruncate(fd, (off_t)size) < 0) { close(fd); return -1; }
-    return fd;
+static volatile sig_atomic_t reload_requested;
+
+static void handle_sighup(int) {
+    reload_requested = 1;
 }
 
-static int create_buffer(WlStatus *ws) {
-    if (ws->buffer) return 0;
-    int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->width);
-    int size = stride * ws->height;
-    int fd = create_shm_fd(size);
-    if (fd < 0) return -1;
-
-    wl_shm_pool *pool = wl_shm_create_pool(ws->shm, fd, size);
-    ws->buffer = wl_shm_pool_create_buffer(pool, 0, ws->width, ws->height,
-        stride, WL_SHM_FORMAT_ARGB8888);
-    wl_shm_pool_destroy(pool);
-
-    ws->shm_data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    close(fd);
-    if (ws->shm_data == MAP_FAILED) return -1;
-
-    ws->cairo_surface = cairo_image_surface_create_for_data(
-        (unsigned char *)ws->shm_data, CAIRO_FORMAT_ARGB32, ws->width, ws->height, stride);
-    ws->cr = cairo_create(ws->cairo_surface);
+static int x11_error_handler(Display *dpy, XErrorEvent *ev) {
+    if (ev->error_code == BadMatch &&
+        ev->request_code == 142 &&
+        ev->minor_code == 6) {
+        return 0;
+    }
+    char buf[128] = {};
+    XGetErrorText(dpy, ev->error_code, buf, sizeof(buf));
+    fprintf(stderr, "X11 error: req=%d minor=%d code=%d (%s)\n",
+        ev->request_code, ev->minor_code, ev->error_code, buf);
     return 0;
 }
 
-static void destroy_buffer(WlStatus *ws) {
-    if (ws->cr) cairo_destroy(ws->cr);
-    ws->cr = nullptr;
-    if (ws->cairo_surface) cairo_surface_destroy(ws->cairo_surface);
-    ws->cairo_surface = nullptr;
-    if (ws->shm_data) {
-        int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->width);
-        munmap(ws->shm_data, stride * ws->height);
+static const char *config_path() {
+    const char *home = getenv("HOME");
+    if (!home) return nullptr;
+    static char buf[512];
+    snprintf(buf, sizeof(buf), "%s/.config/wlstatus/config", home);
+    return buf;
+}
+
+static void render(WlStatus *ws);
+static void popup_destroy(WlStatus *ws);
+static void tooltip_destroy(WlStatus *ws);
+
+static Atom get_atom(Display *dpy, const char *name) {
+    return XInternAtom(dpy, name, False);
+}
+
+static void init_atoms(WlStatus *ws) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "_NET_SYSTEM_TRAY_S%d", ws->screen);
+    ws->tray_selection = get_atom(ws->dpy, buf);
+    ws->tray_opcode = get_atom(ws->dpy, "_NET_SYSTEM_TRAY_OPCODE");
+    ws->manager_atom = get_atom(ws->dpy, "MANAGER");
+    ws->xembed_info = get_atom(ws->dpy, "_XEMBED_INFO");
+}
+
+static void tray_add_client(WlStatus *ws, Window client_win) {
+    if (ws->n_tray_clients >= MAX_TRAY_CLIENTS) return;
+
+    XWindowAttributes attr;
+    if (!XGetWindowAttributes(ws->dpy, client_win, &attr)) return;
+
+    XSelectInput(ws->dpy, client_win, StructureNotifyMask | PropertyChangeMask);
+
+    TrayClient *tc = &ws->tray_clients[ws->n_tray_clients++];
+    tc->win = client_win;
+    tc->w = ws->tray_icon_size;
+    tc->h = ws->tray_icon_size;
+    tc->mapped = true;
+    tc->pixmap = 0;
+    tc->surface = nullptr;
+
+    XReparentWindow(ws->dpy, client_win, ws->tray_win, 0, 0);
+    XResizeWindow(ws->dpy, client_win, tc->w, tc->h);
+    XMapWindow(ws->dpy, client_win);
+
+    tc->pixmap = XCompositeNameWindowPixmap(ws->dpy, client_win);
+    if (tc->pixmap) {
+        tc->surface = cairo_xlib_surface_create(ws->dpy, tc->pixmap,
+            DefaultVisual(ws->dpy, ws->screen), tc->w, tc->h);
+    } else {
+        fprintf(stderr, "tray: XCompositeNameWindowPixmap failed for 0x%lx\n", client_win);
     }
-    ws->shm_data = nullptr;
-    if (ws->buffer) wl_buffer_destroy(ws->buffer);
-    ws->buffer = nullptr;
+
+    long xembed_data[2] = {XEMBED_MAPPED, 1};
+    XChangeProperty(ws->dpy, client_win, ws->xembed_info,
+        ws->xembed_info, 32, PropModeReplace,
+        (unsigned char *)xembed_data, 2);
+
+    XEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.xclient.type = ClientMessage;
+    ev.xclient.window = client_win;
+    ev.xclient.message_type = ws->xembed_info;
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = CurrentTime;
+    ev.xclient.data.l[1] = XEMBED_EMBEDDED_NOTIFY;
+    ev.xclient.data.l[2] = 0;
+    ev.xclient.data.l[3] = ws->tray_win;
+    ev.xclient.data.l[4] = 0;
+    XSendEvent(ws->dpy, client_win, False, NoEventMask, &ev);
+}
+
+static void tray_remove_client(WlStatus *ws, Window win) {
+    for (int i = 0; i < ws->n_tray_clients; i++) {
+        if (ws->tray_clients[i].win == win) {
+            if (ws->tray_clients[i].surface)
+                cairo_surface_destroy(ws->tray_clients[i].surface);
+            if (ws->tray_clients[i].pixmap)
+                XFreePixmap(ws->dpy, ws->tray_clients[i].pixmap);
+            ws->tray_clients[i] = ws->tray_clients[--ws->n_tray_clients];
+            render(ws);
+            return;
+        }
+    }
+}
+
+static void tray_handle_client_message(WlStatus *ws, XClientMessageEvent *ev) {
+    if (ev->message_type != ws->tray_opcode) return;
+    if ((Atom)ev->data.l[1] != SYSTEM_TRAY_REQUEST_DOCK) return;
+    Window client_win = (Window)ev->data.l[2];
+    tray_add_client(ws, client_win);
+    render(ws);
+}
+
+static bool tray_claim_selection(WlStatus *ws) {
+    ws->tray_win = XCreateSimpleWindow(ws->dpy, RootWindow(ws->dpy, ws->screen),
+        0, 0, 1, 1, 0, 0, 0);
+    XSetSelectionOwner(ws->dpy, ws->tray_selection, ws->tray_win, CurrentTime);
+    if (XGetSelectionOwner(ws->dpy, ws->tray_selection) != ws->tray_win)
+        return false;
+
+    XClientMessageEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = ClientMessage;
+    ev.window = RootWindow(ws->dpy, ws->screen);
+    ev.message_type = ws->manager_atom;
+    ev.format = 32;
+    ev.data.l[0] = CurrentTime;
+    ev.data.l[1] = ws->tray_selection;
+    ev.data.l[2] = ws->tray_win;
+    ev.data.l[3] = 0;
+    ev.data.l[4] = 0;
+    XSendEvent(ws->dpy, RootWindow(ws->dpy, ws->screen), False,
+        StructureNotifyMask, (XEvent *)&ev);
+
+    return true;
+}
+
+static void setup_tray(WlStatus *ws) {
+    init_atoms(ws);
+
+    int comp_event_base, comp_error_base;
+    if (!XCompositeQueryExtension(ws->dpy, &comp_event_base, &comp_error_base)) {
+        fprintf(stderr, "warning: Composite extension not available, tray may not work\n");
+    } else {
+        fprintf(stderr, "composite available (event_base=%d)\n", comp_event_base);
+    }
+
+    if (tray_claim_selection(ws)) {
+        fprintf(stderr, "system tray claimed\n");
+    } else {
+        fprintf(stderr, "warning: could not claim system tray\n");
+    }
+}
+
+static void setup_plugin_watches(WlStatus *ws) {
+    if (!ws->bar) return;
+    ws->inotify_fd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
+    if (ws->inotify_fd < 0) return;
+
+    for (int i = 0; i < ws->bar->n_lua_plugins; i++) {
+        char watchkey[32];
+        snprintf(watchkey, sizeof(watchkey), "lua_plugin_%d_watch", i + 1);
+        const char *watch = config_get(ws->cfg, watchkey, "");
+        if (watch[0]) {
+            int wd = inotify_add_watch(ws->inotify_fd, watch, IN_MODIFY);
+            if (wd >= 0) ws->bar->lua_plugins[i].watch_wd = wd;
+        }
+    }
+
+    const char *plugins_dir = config_get(ws->cfg, "lua_plugins_dir", nullptr);
+    if (!plugins_dir) {
+        const char *home = getenv("HOME");
+        if (home) {
+            static char dir[256];
+            snprintf(dir, sizeof(dir), "%s/.config/wlstatus/plugins", home);
+            plugins_dir = dir;
+        }
+    }
+
+    if (plugins_dir) {
+        auto add_watch_for_plugin = [&](int idx, const char *sysfs) {
+            if (idx < 0 || idx >= ws->bar->n_lua_plugins) return;
+            if (ws->bar->lua_plugins[idx].watch_wd >= 0) return;
+            if (access(sysfs, F_OK) != 0) return;
+            int wd = inotify_add_watch(ws->inotify_fd, sysfs, IN_MODIFY);
+            if (wd >= 0) ws->bar->lua_plugins[idx].watch_wd = wd;
+        };
+
+        for (int i = 0; i < ws->bar->n_lua_plugins; i++) {
+            const char *pname = ws->bar->lua_plugins[i].path;
+            if (!pname[0]) continue;
+
+            if (strstr(pname, "battery")) {
+                add_watch_for_plugin(i, "/sys/class/power_supply/BAT0/uevent");
+            } else if (strstr(pname, "brightness")) {
+                static const char *backlights[] = {
+                    "/sys/class/backlight/intel_backlight/brightness",
+                    "/sys/class/backlight/amdgpu_bl0/brightness",
+                    "/sys/class/backlight/nvidia_0/brightness",
+                    nullptr
+                };
+                for (int b = 0; backlights[b]; b++) {
+                    if (access(backlights[b], F_OK) == 0) {
+                        add_watch_for_plugin(i, backlights[b]);
+                        break;
+                    }
+                }
+            } else if (strstr(pname, "network") || strstr(pname, "net")) {
+                add_watch_for_plugin(i, "/sys/class/net");
+            }
+        }
+    }
+}
+
+static void create_back_buffer(WlStatus *ws) {
+    if (ws->back_pixmap) {
+        cairo_destroy(ws->back_cr);
+        cairo_surface_destroy(ws->back_cairo_surface);
+        XFreePixmap(ws->dpy, ws->back_pixmap);
+    }
+    ws->back_pixmap = XCreatePixmap(ws->dpy, ws->win, ws->width, ws->height,
+        DefaultDepth(ws->dpy, ws->screen));
+    ws->back_cairo_surface = cairo_xlib_surface_create(ws->dpy, ws->back_pixmap,
+        DefaultVisual(ws->dpy, ws->screen), ws->width, ws->height);
+    ws->back_cr = cairo_create(ws->back_cairo_surface);
+}
+
+static void destroy_back_buffer(WlStatus *ws) {
+    if (ws->back_cr) cairo_destroy(ws->back_cr);
+    ws->back_cr = nullptr;
+    if (ws->back_cairo_surface) cairo_surface_destroy(ws->back_cairo_surface);
+    ws->back_cairo_surface = nullptr;
+    if (ws->back_pixmap) XFreePixmap(ws->dpy, ws->back_pixmap);
+    ws->back_pixmap = 0;
 }
 
 static void render(WlStatus *ws) {
-    bar_render(ws->bar, ws->cr);
-    cairo_surface_flush(ws->cairo_surface);
-    wl_surface_attach(ws->surface, ws->buffer, 0, 0);
-    wl_surface_damage_buffer(ws->surface, 0, 0, ws->width, ws->height);
-    wl_surface_commit(ws->surface);
+    if (!ws->back_cr) create_back_buffer(ws);
 
-    if (ws->popup.visible && ws->popup.buffer && ws->popup.surface) {
-        wl_surface_attach(ws->popup.surface, ws->popup.buffer, 0, 0);
-        wl_surface_damage_buffer(ws->popup.surface, 0, 0, ws->popup.width, ws->popup.height);
-        wl_surface_commit(ws->popup.surface);
+    int tray_w = ws->n_tray_clients * (ws->tray_icon_size + 4);
+    ws->bar->tray_width = tray_w;
+
+
+    cairo_t *cr = ws->back_cr;
+    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
+    bar_render(ws->bar, cr);
+
+    int tray_x = ws->width - BAR_PADDING - tray_w;
+
+    for (int i = 0; i < ws->n_tray_clients; i++) {
+        TrayClient *tc = &ws->tray_clients[i];
+        tc->x = tray_x;
+        tc->y = (ws->height - tc->h) / 2;
+
+        if (tc->surface) {
+            cairo_surface_destroy(tc->surface);
+            tc->surface = nullptr;
+        }
+        if (tc->pixmap) {
+            XFreePixmap(ws->dpy, tc->pixmap);
+        }
+        tc->pixmap = XCompositeNameWindowPixmap(ws->dpy, tc->win);
+        if (tc->pixmap) {
+            tc->surface = cairo_xlib_surface_create(ws->dpy, tc->pixmap,
+                DefaultVisual(ws->dpy, ws->screen), tc->w, tc->h);
+        }
+
+        cairo_save(cr);
+        cairo_rectangle(cr, tc->x, tc->y, tc->w, tc->h);
+        cairo_clip(cr);
+
+        cairo_set_source_rgba(cr, 0.2, 0.2, 0.3, 0.5);
+        cairo_rectangle(cr, tc->x, tc->y, tc->w, tc->h);
+        cairo_fill(cr);
+
+        if (tc->surface) {
+            cairo_set_source_surface(cr, tc->surface, tc->x, tc->y);
+            cairo_paint(cr);
+        }
+
+        cairo_restore(cr);
+
+        tray_x += tc->w + 4;
     }
+
+    cairo_surface_flush(ws->back_cairo_surface);
+    XCopyArea(ws->dpy, ws->back_pixmap, ws->win, ws->gc, 0, 0, ws->width, ws->height, 0, 0);
+    XFlush(ws->dpy);
 }
 
-static int popup_create_buffer(WlStatus *ws) {
-    if (ws->popup.buffer) return 0;
-    int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->popup.width);
-    int size = stride * ws->popup.height;
-    int fd = create_shm_fd(size);
-    if (fd < 0) return -1;
-
-    wl_shm_pool *pool = wl_shm_create_pool(ws->shm, fd, size);
-    ws->popup.buffer = wl_shm_pool_create_buffer(pool, 0,
-        ws->popup.width, ws->popup.height, stride, WL_SHM_FORMAT_ARGB8888);
-    wl_shm_pool_destroy(pool);
-
-    ws->popup.shm_data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    close(fd);
-    if (ws->popup.shm_data == MAP_FAILED) return -1;
-
-    ws->popup.cairo_surface = cairo_image_surface_create_for_data(
-        (unsigned char *)ws->popup.shm_data, CAIRO_FORMAT_ARGB32,
-        ws->popup.width, ws->popup.height, stride);
-    ws->popup.cr = cairo_create(ws->popup.cairo_surface);
-    return 0;
-}
-
-static void popup_destroy_buffer(WlStatus *ws) {
-    if (ws->popup.cr) cairo_destroy(ws->popup.cr);
-    ws->popup.cr = nullptr;
-    if (ws->popup.cairo_surface) cairo_surface_destroy(ws->popup.cairo_surface);
-    ws->popup.cairo_surface = nullptr;
-    if (ws->popup.shm_data) {
-        int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->popup.width);
-        munmap(ws->popup.shm_data, stride * ws->popup.height);
+static void execute_command(const char *cmd) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl("/bin/sh", "sh", "-c", cmd, nullptr);
+        _exit(1);
     }
-    ws->popup.shm_data = nullptr;
-    if (ws->popup.buffer) wl_buffer_destroy(ws->popup.buffer);
-    ws->popup.buffer = nullptr;
 }
 
 static void popup_render(WlStatus *ws) {
-    cairo_t *cr = ws->popup.cr;
+    if (!ws->popup.visible) return;
     int w = ws->popup.width, h = ws->popup.height;
+
+    Pixmap pm = XCreatePixmap(ws->dpy, ws->popup.win, w, h,
+        DefaultDepth(ws->dpy, ws->screen));
+    cairo_surface_t *surf = cairo_xlib_surface_create(ws->dpy, pm,
+        DefaultVisual(ws->dpy, ws->screen), w, h);
+    cairo_t *cr = cairo_create(surf);
 
     cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
     cairo_paint(cr);
@@ -267,186 +485,99 @@ static void popup_render(WlStatus *ws) {
     ws->popup.cancel_btn_w = btn_w;
     ws->popup.cancel_btn_h = btn_h;
 
-    cairo_surface_flush(ws->popup.cairo_surface);
-    wl_surface_attach(ws->popup.surface, ws->popup.buffer, 0, 0);
-    wl_surface_damage_buffer(ws->popup.surface, 0, 0, w, h);
-    wl_surface_commit(ws->popup.surface);
+    cairo_surface_flush(surf);
+    XCopyArea(ws->dpy, pm, ws->popup.win, ws->gc, 0, 0, w, h, 0, 0);
+    XFlush(ws->dpy);
+
+    cairo_destroy(cr);
+    cairo_surface_destroy(surf);
+    XFreePixmap(ws->dpy, pm);
 }
 
 static void popup_destroy(WlStatus *ws) {
-    if (!ws->popup.visible) return;
-    ws->popup.visible = false;
-    popup_destroy_buffer(ws);
-    if (ws->popup.layer_surface) {
-        zwlr_layer_surface_v1_destroy(ws->popup.layer_surface);
-        ws->popup.layer_surface = nullptr;
+    if (ws->popup.visible && ws->popup.win) {
+        XUnmapWindow(ws->dpy, ws->popup.win);
+        ws->popup.visible = false;
     }
-    if (ws->popup.surface) {
-        wl_surface_destroy(ws->popup.surface);
-        ws->popup.surface = nullptr;
-    }
-    ws->popup.configured = false;
 }
-
-static void popup_layer_surface_configure(void *data,
-    zwlr_layer_surface_v1 *surface, uint32_t serial,
-    uint32_t width, uint32_t height) {
-    auto *ws = (WlStatus *)data;
-    zwlr_layer_surface_v1_ack_configure(surface, serial);
-    if (width > 0) ws->popup.width = width;
-    if (height > 0) ws->popup.height = height;
-    if (!ws->popup.buffer) {
-        popup_create_buffer(ws);
-        popup_render(ws);
-    }
-    ws->popup.configured = true;
-}
-
-static void popup_layer_surface_closed(void *data,
-    zwlr_layer_surface_v1 *) {
-    ((WlStatus *)data)->popup.visible = false;
-}
-
-static const zwlr_layer_surface_v1_listener popup_layer_surface_listener = {
-    .configure = popup_layer_surface_configure,
-    .closed = popup_layer_surface_closed,
-};
 
 static void popup_create(WlStatus *ws, int action) {
     if (ws->popup.visible) popup_destroy(ws);
 
-    ws->popup = {};
     ws->popup.width = 175;
     ws->popup.height = 105;
     ws->popup.action = action;
-    ws->popup.hovered_btn = -1;
 
-    ws->popup.surface = wl_compositor_create_surface(ws->compositor);
-    ws->popup.layer_surface = zwlr_layer_shell_v1_get_layer_surface(
-        ws->layer_shell, ws->popup.surface, nullptr,
-        ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "wlstatus-popup");
+    if (!ws->popup.win) {
+        ws->popup.win = XCreateSimpleWindow(ws->dpy, RootWindow(ws->dpy, ws->screen),
+            0, 0, ws->popup.width, ws->popup.height, 0, 0, 0);
+        XSelectInput(ws->dpy, ws->popup.win, ExposureMask | ButtonPressMask |
+            ButtonReleaseMask | PointerMotionMask | LeaveWindowMask);
+    }
 
-    zwlr_layer_surface_v1_add_listener(ws->popup.layer_surface,
-        &popup_layer_surface_listener, ws);
-
-    zwlr_layer_surface_v1_set_size(ws->popup.layer_surface, ws->popup.width, ws->popup.height);
-    zwlr_layer_surface_v1_set_anchor(ws->popup.layer_surface,
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
     const char *anchor_str = config_get(ws->cfg, "bar_anchor", "top");
     bool bar_on_bottom = (strcmp(anchor_str, "bottom") == 0);
-    if (bar_on_bottom) {
-        zwlr_layer_surface_v1_set_anchor(ws->popup.layer_surface,
-            ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-        zwlr_layer_surface_v1_set_margin(ws->popup.layer_surface,
-            0, BAR_PADDING, ws->height + 4, 0);
-    } else {
-        zwlr_layer_surface_v1_set_margin(ws->popup.layer_surface,
-            ws->height + 4, BAR_PADDING, 0, 0);
-    }
-    zwlr_layer_surface_v1_set_exclusive_zone(ws->popup.layer_surface, 0);
-
+    int px = ws->width - ws->popup.width - BAR_PADDING;
+    int py = bar_on_bottom ? ws->height - ws->popup.height - 4 : ws->height + 4;
+    XMoveResizeWindow(ws->dpy, ws->popup.win, px, py,
+        ws->popup.width, ws->popup.height);
+    XMapWindow(ws->dpy, ws->popup.win);
     ws->popup.visible = true;
-    wl_surface_commit(ws->popup.surface);
-    wl_display_roundtrip(ws->display);
+    popup_render(ws);
+}
+
+static void tooltip_render(WlStatus *ws) {
+    if (!ws->tooltip.visible) return;
+    int w = ws->tooltip.width, h = ws->tooltip.height;
+
+    Pixmap pm = XCreatePixmap(ws->dpy, ws->tooltip.win, w, h,
+        DefaultDepth(ws->dpy, ws->screen));
+    cairo_surface_t *surf = cairo_xlib_surface_create(ws->dpy, pm,
+        DefaultVisual(ws->dpy, ws->screen), w, h);
+    cairo_t *cr = cairo_create(surf);
+
+    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
+    draw_rounded_rect(cr, 0, 0, w, h, 6);
+    cairo_set_source_rgba(cr, 0.10, 0.10, 0.18, 0.96);
+    cairo_fill(cr);
+
+    const char *tip_ff = config_get(ws->cfg, "font_family", "Sans");
+    char tip_font[64];
+    snprintf(tip_font, sizeof(tip_font), "%s 10", tip_ff);
+    PangoLayout *lay = pango_cairo_create_layout(cr);
+    PangoFontDescription *fdesc = pango_font_description_from_string(tip_font);
+    pango_layout_set_font_description(lay, fdesc);
+    pango_font_description_free(fdesc);
+    pango_layout_set_text(lay, ws->tooltip.text, -1);
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    cairo_move_to(cr, 6, 6);
+    pango_cairo_show_layout(cr, lay);
+    g_object_unref(lay);
+
+    cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.3);
+    cairo_set_line_width(cr, 1);
+    draw_rounded_rect(cr, 0, 0, w, h, 6);
+    cairo_stroke(cr);
+
+    cairo_surface_flush(surf);
+    XCopyArea(ws->dpy, pm, ws->tooltip.win, ws->gc, 0, 0, w, h, 0, 0);
+    XFlush(ws->dpy);
+
+    cairo_destroy(cr);
+    cairo_surface_destroy(surf);
+    XFreePixmap(ws->dpy, pm);
 }
 
 static void tooltip_destroy(WlStatus *ws) {
-    if (!ws->tooltip.visible) return;
-    ws->tooltip.visible = false;
+    if (ws->tooltip.visible && ws->tooltip.win) {
+        XUnmapWindow(ws->dpy, ws->tooltip.win);
+        ws->tooltip.visible = false;
+    }
     ws->tooltip.hovered_clickable = -1;
-    if (ws->tooltip.buffer) {
-        cairo_destroy(ws->tooltip.cr);
-        ws->tooltip.cr = nullptr;
-        cairo_surface_destroy(ws->tooltip.cairo_surface);
-        ws->tooltip.cairo_surface = nullptr;
-        if (ws->tooltip.shm_data) {
-            int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->tooltip.width);
-            munmap(ws->tooltip.shm_data, stride * ws->tooltip.height);
-        }
-        ws->tooltip.shm_data = nullptr;
-        wl_buffer_destroy(ws->tooltip.buffer);
-        ws->tooltip.buffer = nullptr;
-    }
-    if (ws->tooltip.layer_surface) {
-        zwlr_layer_surface_v1_destroy(ws->tooltip.layer_surface);
-        ws->tooltip.layer_surface = nullptr;
-    }
-    if (ws->tooltip.surface) {
-        wl_surface_destroy(ws->tooltip.surface);
-        ws->tooltip.surface = nullptr;
-    }
-    ws->tooltip.configured = false;
 }
-
-static void tooltip_layer_surface_configure(void *data,
-    zwlr_layer_surface_v1 *surface, uint32_t serial,
-    uint32_t width, uint32_t height) {
-    auto *ws = (WlStatus *)data;
-    zwlr_layer_surface_v1_ack_configure(surface, serial);
-    if (width > 0) ws->tooltip.width = width;
-    if (height > 0) ws->tooltip.height = height;
-    if (!ws->tooltip.buffer) {
-        int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->tooltip.width);
-        int size = stride * ws->tooltip.height;
-        int shm_fd = create_shm_fd(size);
-        if (shm_fd < 0) return;
-        wl_shm_pool *pool = wl_shm_create_pool(ws->shm, shm_fd, size);
-        ws->tooltip.buffer = wl_shm_pool_create_buffer(pool, 0,
-            ws->tooltip.width, ws->tooltip.height, stride, WL_SHM_FORMAT_ARGB8888);
-        wl_shm_pool_destroy(pool);
-        ws->tooltip.shm_data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-        close(shm_fd);
-        if (ws->tooltip.shm_data == MAP_FAILED) { ws->tooltip.shm_data = nullptr; return; }
-        ws->tooltip.cairo_surface = cairo_image_surface_create_for_data(
-            (unsigned char *)ws->tooltip.shm_data, CAIRO_FORMAT_ARGB32,
-            ws->tooltip.width, ws->tooltip.height, stride);
-        ws->tooltip.cr = cairo_create(ws->tooltip.cairo_surface);
-
-        cairo_t *cr = ws->tooltip.cr;
-        cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
-        cairo_paint(cr);
-        cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-        draw_rounded_rect(cr, 0, 0, ws->tooltip.width, ws->tooltip.height, 6);
-        cairo_set_source_rgba(cr, 0.10, 0.10, 0.18, 0.96);
-        cairo_fill(cr);
-
-        const char *tip_ff = config_get(ws->cfg, "font_family", "Sans");
-        char tip_font[64];
-        snprintf(tip_font, sizeof(tip_font), "%s 10", tip_ff);
-        PangoLayout *lay = pango_cairo_create_layout(cr);
-        PangoFontDescription *fdesc = pango_font_description_from_string(tip_font);
-        pango_layout_set_font_description(lay, fdesc);
-        pango_font_description_free(fdesc);
-        pango_layout_set_text(lay, ws->tooltip.text, -1);
-        cairo_set_source_rgb(cr, 1, 1, 1);
-        cairo_move_to(cr, 6, 6);
-        pango_cairo_show_layout(cr, lay);
-        g_object_unref(lay);
-
-        cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.3);
-        cairo_set_line_width(cr, 1);
-        draw_rounded_rect(cr, 0, 0, ws->tooltip.width, ws->tooltip.height, 6);
-        cairo_stroke(cr);
-
-        cairo_surface_flush(ws->tooltip.cairo_surface);
-    }
-    ws->tooltip.configured = true;
-    if (ws->tooltip.buffer && ws->tooltip.surface) {
-        wl_surface_attach(ws->tooltip.surface, ws->tooltip.buffer, 0, 0);
-        wl_surface_damage_buffer(ws->tooltip.surface, 0, 0, ws->tooltip.width, ws->tooltip.height);
-        wl_surface_commit(ws->tooltip.surface);
-    }
-}
-
-static void tooltip_layer_surface_closed(void *data,
-    zwlr_layer_surface_v1 *) {
-    ((WlStatus *)data)->tooltip.visible = false;
-}
-
-static const zwlr_layer_surface_v1_listener tooltip_layer_surface_listener = {
-    .configure = tooltip_layer_surface_configure,
-    .closed = tooltip_layer_surface_closed,
-};
 
 static void tooltip_show(WlStatus *ws, const char *text, int hover_x, int hover_y) {
     if (ws->tooltip.visible && strcmp(ws->tooltip.text, text) == 0)
@@ -454,9 +585,6 @@ static void tooltip_show(WlStatus *ws, const char *text, int hover_x, int hover_
 
     tooltip_destroy(ws);
 
-    ws->tooltip = {};
-    ws->tooltip.hover_x = hover_x;
-    ws->tooltip.hover_y = hover_y;
     ws->tooltip.hovered_clickable = 0;
     strncpy(ws->tooltip.text, text, sizeof(ws->tooltip.text) - 1);
 
@@ -466,439 +594,84 @@ static void tooltip_show(WlStatus *ws, const char *text, int hover_x, int hover_
     ws->tooltip.width = 280;
     ws->tooltip.height = nlines * 16 + 14;
 
-    ws->tooltip.surface = wl_compositor_create_surface(ws->compositor);
-    ws->tooltip.layer_surface = zwlr_layer_shell_v1_get_layer_surface(
-        ws->layer_shell, ws->tooltip.surface, nullptr,
-        ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "wlstatus-tooltip");
-
-    zwlr_layer_surface_v1_add_listener(ws->tooltip.layer_surface,
-        &tooltip_layer_surface_listener, ws);
-
-    zwlr_layer_surface_v1_set_size(ws->tooltip.layer_surface, ws->tooltip.width, ws->tooltip.height);
-    zwlr_layer_surface_v1_set_anchor(ws->tooltip.layer_surface,
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+    if (!ws->tooltip.win) {
+        XSetWindowAttributes attrs;
+        attrs.override_redirect = True;
+        ws->tooltip.win = XCreateWindow(ws->dpy, RootWindow(ws->dpy, ws->screen),
+            0, 0, ws->tooltip.width, ws->tooltip.height, 0,
+            CopyFromParent, InputOutput, CopyFromParent,
+            CWOverrideRedirect, &attrs);
+        XSelectInput(ws->dpy, ws->tooltip.win, ExposureMask);
+    }
 
     const char *anchor_str = config_get(ws->cfg, "bar_anchor", "top");
     bool bar_on_bottom = (strcmp(anchor_str, "bottom") == 0);
-    if (bar_on_bottom)
-        zwlr_layer_surface_v1_set_margin(ws->tooltip.layer_surface,
-            hover_y - ws->tooltip.height - 4, BAR_PADDING, 0, 0);
-    else
-        zwlr_layer_surface_v1_set_margin(ws->tooltip.layer_surface,
-            ws->height + 4, BAR_PADDING, 0, 0);
-
-    zwlr_layer_surface_v1_set_exclusive_zone(ws->tooltip.layer_surface, 0);
+    int tx = ws->width - ws->tooltip.width - BAR_PADDING;
+    int ty = bar_on_bottom ? ws->height - ws->tooltip.height - 4 : ws->height + 4;
+    XMoveResizeWindow(ws->dpy, ws->tooltip.win, tx, ty,
+        ws->tooltip.width, ws->tooltip.height);
+    XMapWindow(ws->dpy, ws->tooltip.win);
     ws->tooltip.visible = true;
-    wl_surface_commit(ws->tooltip.surface);
+    tooltip_render(ws);
 }
 
-static volatile sig_atomic_t reload_requested;
+static void handle_button(WlStatus *ws, XButtonEvent *ev) {
+    if (ev->button != Button1) return;
+    int x = ev->x, y = ev->y;
 
-static void handle_sighup(int) {
-    reload_requested = 1;
-}
-
-static int hypr_connect_socket(const char *sock_name) {
-    const char *xdg = getenv("XDG_RUNTIME_DIR");
-    const char *inst = getenv("HYPRLAND_INSTANCE_SIGNATURE");
-    if (!xdg || !inst) return -1;
-
-    char path[256];
-    snprintf(path, sizeof(path), "%s/hypr/%s/%s", xdg, inst, sock_name);
-
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
-
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
-
-    struct sockaddr_un addr = {};
-    addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
-
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(fd);
-        return -1;
-    }
-
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-    return fd;
-}
-
-static int hypr_connect_event_socket() {
-    return hypr_connect_socket(".socket2.sock");
-}
-
-static int hypr_send_command(const char *cmd) {
-    int fd = hypr_connect_socket(".socket.sock");
-    if (fd < 0) return -1;
-    write(fd, cmd, strlen(cmd));
-    write(fd, "\n", 1);
-    char buf[4096];
-    int n = read(fd, buf, sizeof(buf) - 1);
-    close(fd);
-    return n;
-}
-
-static void hypr_disconnect(WlStatus *ws) {
-    if (ws->hypr_ev_fd >= 0) {
-        close(ws->hypr_ev_fd);
-        ws->hypr_ev_fd = -1;
-    }
-}
-
-static void track_window_add(WlStatus *ws, const char *address, int workspace_id, const char *cls);
-static void track_window_remove(WlStatus *ws, const char *address);
-static void track_window_move(WlStatus *ws, const char *address, int workspace_id);
-
-static bool hypr_read_events(int fd, WlStatus *ws) {
-    char buf[4096];
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
-    if (n <= 0) {
-        if (n == 0 || (n < 0 && errno == ECONNRESET))
-            hypr_disconnect(ws);
-        return false;
-    }
-    buf[n] = '\0';
-
-    bool need_update = false;
-    char *p = buf;
-    while (p && *p) {
-        char *newline = strchr(p, '\n');
-        if (newline) *newline = '\0';
-
-        char *delim = strstr(p, ">>");
-        if (delim) {
-            *delim = '\0';
-            const char *event = p;
-            const char *data = delim + 2;
-
-            if (strcmp(event, "activewindow") == 0) {
-                const char *comma = strchr(data, ',');
-                if (comma) {
-                    size_t class_len = comma - data;
-                    if (class_len > 63) class_len = 63;
-                    char cls[64];
-                    memcpy(cls, data, class_len);
-                    cls[class_len] = '\0';
-                    const char *title = comma + 1;
-                    while (*title == ' ') title++;
-                    bar_set_active_window(ws->bar, cls, title);
-                }
-                need_update = true;
-            } else if (strcmp(event, "windowtitle") == 0) {
-                bar_set_active_window(ws->bar, nullptr, data);
-                need_update = true;
-            } else if (strcmp(event, "openwindow") == 0) {
-                char addr[32], cls[64];
-                int ws_id;
-                if (sscanf(data, "%31[^,],%d,%63[^,]", addr, &ws_id, cls) >= 2) {
-                    track_window_add(ws, addr, ws_id, cls);
-                }
-                need_update = true;
-            } else if (strcmp(event, "closewindow") == 0) {
-                track_window_remove(ws, data);
-                need_update = true;
-            } else if (strcmp(event, "movewindow") == 0) {
-                char addr[32];
-                int ws_id;
-                if (sscanf(data, "%31[^,],%d", addr, &ws_id) == 2)
-                    track_window_move(ws, addr, ws_id);
-                need_update = true;
-            } else if (strcmp(event, "movetoworkspace") == 0) {
-                char addr[32];
-                int ws_id;
-                if (sscanf(data, "%d,%31s", &ws_id, addr) == 2)
-                    track_window_move(ws, addr, ws_id);
-                need_update = true;
-            } else if (strcmp(event, "workspace") == 0 ||
-                       strcmp(event, "workspacev2") == 0 ||
-                       strcmp(event, "focusedmon") == 0) {
-                need_update = true;
-            }
-        }
-
-        p = newline ? newline + 1 : nullptr;
-    }
-
-    return need_update;
-}
-
-static const char *config_path() {
-    const char *home = getenv("HOME");
-    if (!home) return nullptr;
-    static char buf[512];
-    snprintf(buf, sizeof(buf), "%s/.config/wlstatus/config", home);
-    return buf;
-}
-
-static void setup_plugin_watches(WlStatus *ws) {
-    if (!ws->bar) return;
-    ws->plugin_ifd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
-    if (ws->plugin_ifd < 0) return;
-
-    for (int i = 0; i < ws->bar->n_lua_plugins; i++) {
-        char watchkey[32];
-        snprintf(watchkey, sizeof(watchkey), "lua_plugin_%d_watch", i + 1);
-        const char *watch = config_get(ws->cfg, watchkey, "");
-        if (watch[0]) {
-            int wd = inotify_add_watch(ws->plugin_ifd, watch, IN_MODIFY);
-            if (wd >= 0) ws->bar->lua_plugins[i].watch_wd = wd;
-        }
-    }
-
-    const char *plugins_dir = config_get(ws->cfg, "lua_plugins_dir", nullptr);
-    if (!plugins_dir) {
-        const char *home = getenv("HOME");
-        if (home) {
-            static char dir[256];
-            snprintf(dir, sizeof(dir), "%s/.config/wlstatus/plugins", home);
-            plugins_dir = dir;
-        }
-    }
-
-    if (plugins_dir) {
-        auto add_watch_for_plugin = [&](int idx, const char *sysfs) {
-            if (idx < 0 || idx >= ws->bar->n_lua_plugins) return;
-            if (ws->bar->lua_plugins[idx].watch_wd >= 0) return;
-            if (access(sysfs, F_OK) != 0) return;
-            int wd = inotify_add_watch(ws->plugin_ifd, sysfs, IN_MODIFY);
-            if (wd >= 0) ws->bar->lua_plugins[idx].watch_wd = wd;
-        };
-
-        for (int i = 0; i < ws->bar->n_lua_plugins; i++) {
-            const char *pname = ws->bar->lua_plugins[i].path;
-            if (!pname[0]) continue;
-
-            if (strstr(pname, "battery")) {
-                add_watch_for_plugin(i, "/sys/class/power_supply/BAT0/uevent");
-            } else if (strstr(pname, "brightness")) {
-                static const char *backlights[] = {
-                    "/sys/class/backlight/intel_backlight/brightness",
-                    "/sys/class/backlight/amdgpu_bl0/brightness",
-                    "/sys/class/backlight/nvidia_0/brightness",
-                    nullptr
-                };
-                for (int b = 0; backlights[b]; b++) {
-                    if (access(backlights[b], F_OK) == 0) {
-                        add_watch_for_plugin(i, backlights[b]);
-                        break;
-                    }
-                }
-            } else if (strstr(pname, "network") || strstr(pname, "net")) {
-                add_watch_for_plugin(i, "/sys/class/net");
-            }
-        }
-    }
-}
-
-static void track_window_add(WlStatus *ws, const char *address, int workspace_id, const char *cls) {
-    if (ws->n_tracked_windows >= MAX_TRACKED_WINDOWS) return;
-    auto *tw = &ws->tracked_windows[ws->n_tracked_windows++];
-    snprintf(tw->address, sizeof(tw->address), "%s", address);
-    tw->workspace_id = workspace_id;
-    snprintf(tw->cls, sizeof(tw->cls), "%s", cls);
-}
-
-static void track_window_remove(WlStatus *ws, const char *address) {
-    for (int i = 0; i < ws->n_tracked_windows; i++) {
-        if (strcmp(ws->tracked_windows[i].address, address) == 0) {
-            ws->tracked_windows[i] = ws->tracked_windows[--ws->n_tracked_windows];
+    if (ws->popup.visible) {
+        if (x >= ws->popup.confirm_btn_x && x < ws->popup.confirm_btn_x + ws->popup.confirm_btn_w &&
+            y >= ws->popup.confirm_btn_y && y < ws->popup.confirm_btn_y + ws->popup.confirm_btn_h) {
+            const char *cmds[] = {"systemctl poweroff", "systemctl reboot", "systemctl suspend"};
+            execute_command(cmds[ws->popup.action]);
+            popup_destroy(ws);
             return;
         }
-    }
-}
-
-static void track_window_move(WlStatus *ws, const char *address, int workspace_id) {
-    for (int i = 0; i < ws->n_tracked_windows; i++) {
-        if (strcmp(ws->tracked_windows[i].address, address) == 0) {
-            ws->tracked_windows[i].workspace_id = workspace_id;
+        if (x >= ws->popup.cancel_btn_x && x < ws->popup.cancel_btn_x + ws->popup.cancel_btn_w &&
+            y >= ws->popup.cancel_btn_y && y < ws->popup.cancel_btn_y + ws->popup.cancel_btn_h) {
+            popup_destroy(ws);
             return;
         }
+        popup_destroy(ws);
     }
-}
-
-static void init_window_tracking(WlStatus *ws) {
-    ws->n_tracked_windows = 0;
-    FILE *fp = popen("hyprctl clients 2>/dev/null", "r");
-    if (!fp) return;
-
-    char line[256];
-    char cur_addr[32] = "";
-    int cur_ws = -1;
-    while (fgets(line, sizeof(line), fp)) {
-        char addr[32];
-        int ws_id;
-        if (sscanf(line, "Window %31s -> workspace ID %d", addr, &ws_id) == 2) {
-            snprintf(cur_addr, sizeof(cur_addr), "%s", addr);
-            cur_ws = ws_id;
-        } else if (cur_addr[0]) {
-            char cls[64];
-            if (sscanf(line, "\tclass: %63[^\n]", cls) == 1) {
-                track_window_add(ws, cur_addr, cur_ws, cls);
-                cur_addr[0] = '\0';
-            }
-        }
-    }
-    pclose(fp);
-
-    bar_update_workspace_names(ws->bar, ws->tracked_windows, ws->n_tracked_windows);
-}
-
-static void reload(WlStatus *ws) {
-    if (ws->popup.visible) popup_destroy(ws);
-    if (ws->tooltip.visible) tooltip_destroy(ws);
-    destroy_buffer(ws);
-    if (ws->bar) bar_destroy(ws->bar);
-    config_destroy(ws->cfg);
-    if (ws->plugin_ifd >= 0) { close(ws->plugin_ifd); ws->plugin_ifd = -1; }
-    ws->cfg = config_load(config_path());
-    ws->bar = bar_create(ws->width, ws->height, ws->cfg);
-    create_buffer(ws);
-    setup_plugin_watches(ws);
-    bar_update_workspaces(ws->bar);
-    init_window_tracking(ws);
-    bar_update_lua_plugins(ws->bar);
-    render(ws);
-}
-
-static void on_timer(WlStatus *ws) {
-    if (!ws->bar || !ws->running) return;
-
-    if (ws->hypr_ev_fd < 0) {
-        ws->hypr_ev_fd = hypr_connect_event_socket();
-        if (ws->hypr_ev_fd < 0) {
-            bar_update_workspaces(ws->bar);
-        }
-    }
-
-    bar_update_lua_plugins(ws->bar);
-    render(ws);
-}
-
-static void layer_surface_configure(void *data,
-    zwlr_layer_surface_v1 *surface, uint32_t serial,
-    uint32_t width, uint32_t height) {
-    auto *ws = (WlStatus *)data;
-    ws->configure_serial = serial;
-
-    if (width == 0) width = ws->width;
-    if (height == 0) height = config_get_int(ws->cfg, "bar_height", BAR_HEIGHT);
-
-    if (ws->width != (int)width || ws->height != (int)height) {
-        destroy_buffer(ws);
-        ws->width = width;
-        ws->height = height;
-        if (ws->bar) bar_destroy(ws->bar);
-        ws->bar = bar_create(ws->width, ws->height, ws->cfg);
-    }
-
-    if (!ws->bar) ws->bar = bar_create(ws->width, ws->height, ws->cfg);
-    create_buffer(ws);
-    zwlr_layer_surface_v1_ack_configure(surface, serial);
-    ws->configured = true;
-
-    bar_update_workspaces(ws->bar);
-    render(ws);
-}
-
-static void layer_surface_closed(void *data,
-    zwlr_layer_surface_v1 *) {
-    ((WlStatus *)data)->running = false;
-}
-
-static const zwlr_layer_surface_v1_listener layer_surface_listener = {
-    .configure = layer_surface_configure,
-    .closed = layer_surface_closed,
-};
-
-static void pointer_enter(void *data, wl_pointer *pointer,
-    uint32_t serial, wl_surface *surface,
-    wl_fixed_t sx, wl_fixed_t sy) {
-    auto *ws = (WlStatus *)data;
-    ws->current_pointer_surface = surface;
-    ws->pointer_x = wl_fixed_to_int(sx);
-    ws->pointer_y = wl_fixed_to_int(sy);
-
-    if (ws->popup.visible && surface == ws->popup.surface)
-        return;
-
-    bar_update_hover(ws->bar, ws->pointer_x, ws->pointer_y);
-    render(ws);
 
     for (int i = 0; i < ws->bar->n_clickables; i++) {
         Clickable *c = &ws->bar->clickables[i];
-        if (!(ws->pointer_x >= c->x && ws->pointer_x < c->x + c->w &&
-              ws->pointer_y >= c->y && ws->pointer_y < c->y + c->h))
-            continue;
-
-        if (c->tooltip_text[0]) {
-            ws->tooltip.hovered_clickable = i;
-            tooltip_show(ws, c->tooltip_text, ws->pointer_x, ws->pointer_y);
-        } else if (c->tooltip_cmd[0]) {
-            FILE *fp = popen(c->tooltip_cmd, "r");
-            if (fp) {
-                char buf[512] = {0};
-                size_t total = 0;
-                char line[256];
-                while (fgets(line, sizeof(line), fp) && total < sizeof(buf) - 1) {
-                    int len = snprintf(buf + total, sizeof(buf) - total, "%s", line);
-                    if (len > 0) total += len;
-                }
-                pclose(fp);
-                ws->tooltip.hovered_clickable = i;
-                tooltip_show(ws, buf, ws->pointer_x, ws->pointer_y);
+        if (x >= c->x && x < c->x + c->w &&
+            y >= c->y && y < c->y + c->h) {
+            switch (c->action) {
+            case CLICK_POWEROFF:
+                popup_create(ws, 0);
+                break;
+            case CLICK_REBOOT:
+                popup_create(ws, 1);
+                break;
+            case CLICK_SUSPEND:
+                popup_create(ws, 2);
+                break;
+            case CLICK_HYPRCTL:
+                execute_command(c->command);
+                break;
+            case CLICK_RUN:
+                execute_command(c->command);
+                break;
+            default:
+                break;
             }
+            break;
         }
-        break;
     }
 }
 
-static void pointer_leave(void *data, wl_pointer *,
-    uint32_t serial, wl_surface *surface) {
-    auto *ws = (WlStatus *)data;
-    ws->current_pointer_surface = nullptr;
-
-    if (ws->popup.visible && surface == ws->popup.surface) {
-        if (ws->popup.hovered_btn != -1) {
-            ws->popup.hovered_btn = -1;
-            popup_render(ws);
-        }
-        return;
-    }
-
-    bar_clear_hover(ws->bar);
-    render(ws);
-    if (ws->tooltip.visible)
-        tooltip_destroy(ws);
-}
-
-static void pointer_motion(void *data, wl_pointer *,
-    uint32_t time, wl_fixed_t sx, wl_fixed_t sy) {
-    auto *ws = (WlStatus *)data;
-    int x = wl_fixed_to_int(sx);
-    int y = wl_fixed_to_int(sy);
+static void handle_motion(WlStatus *ws, XMotionEvent *ev) {
+    int x = ev->x, y = ev->y;
     ws->pointer_x = x;
     ws->pointer_y = y;
-
-    if (ws->popup.visible && ws->current_pointer_surface == ws->popup.surface) {
-        int old = ws->popup.hovered_btn;
-        ws->popup.hovered_btn = -1;
-        if (x >= ws->popup.confirm_btn_x && x < ws->popup.confirm_btn_x + ws->popup.confirm_btn_w &&
-            y >= ws->popup.confirm_btn_y && y < ws->popup.confirm_btn_y + ws->popup.confirm_btn_h)
-            ws->popup.hovered_btn = 0;
-        else if (x >= ws->popup.cancel_btn_x && x < ws->popup.cancel_btn_x + ws->popup.cancel_btn_w &&
-            y >= ws->popup.cancel_btn_y && y < ws->popup.cancel_btn_y + ws->popup.cancel_btn_h)
-            ws->popup.hovered_btn = 1;
-        if (old != ws->popup.hovered_btn)
-            popup_render(ws);
-        return;
-    }
 
     int old_power = ws->bar->power_hovered;
     int old_ws = ws->bar->hovered_workspace;
     bar_update_hover(ws->bar, x, y);
-    if (old_power != ws->bar->power_hovered ||
-        old_ws != ws->bar->hovered_workspace)
+    if (old_power != ws->bar->power_hovered || old_ws != ws->bar->hovered_workspace)
         render(ws);
 
     int found_tooltip = -1;
@@ -937,271 +710,79 @@ static void pointer_motion(void *data, wl_pointer *,
     }
 }
 
-static void execute_command(const char *cmd) {
-    pid_t pid = fork();
-    if (pid == 0) {
-        execl("/bin/sh", "sh", "-c", cmd, nullptr);
-        _exit(1);
-    }
+static void handle_leave(WlStatus *ws) {
+    bar_clear_hover(ws->bar);
+    render(ws);
+    if (ws->tooltip.visible)
+        tooltip_destroy(ws);
 }
 
-static void pointer_button(void *data, wl_pointer *,
-    uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
-    auto *ws = (WlStatus *)data;
-    if (state != 1) return;
-    if (button != 0x110) return;
-
-    int x = ws->pointer_x, y = ws->pointer_y;
-
-    if (ws->popup.visible) {
-        if (ws->current_pointer_surface == ws->popup.surface) {
-            if (x >= ws->popup.confirm_btn_x && x < ws->popup.confirm_btn_x + ws->popup.confirm_btn_w &&
-                y >= ws->popup.confirm_btn_y && y < ws->popup.confirm_btn_y + ws->popup.confirm_btn_h) {
-                const char *cmds[] = {"systemctl poweroff", "systemctl reboot", "systemctl suspend"};
-                execute_command(cmds[ws->popup.action]);
-                popup_destroy(ws);
-                return;
-            }
-            if (x >= ws->popup.cancel_btn_x && x < ws->popup.cancel_btn_x + ws->popup.cancel_btn_w &&
-                y >= ws->popup.cancel_btn_y && y < ws->popup.cancel_btn_y + ws->popup.cancel_btn_h) {
-                popup_destroy(ws);
-                return;
-            }
-        } else {
-            popup_destroy(ws);
-        }
-    }
-
-    for (int i = 0; i < ws->bar->n_clickables; i++) {
-        Clickable *c = &ws->bar->clickables[i];
-        if (x >= c->x && x < c->x + c->w &&
-            y >= c->y && y < c->y + c->h) {
-            switch (c->action) {
-            case CLICK_POWEROFF:
-                popup_create(ws, 0);
-                break;
-            case CLICK_REBOOT:
-                popup_create(ws, 1);
-                break;
-            case CLICK_SUSPEND:
-                popup_create(ws, 2);
-                break;
-            case CLICK_HYPRCTL: {
-                const char *dispatch = strstr(c->command, "dispatch");
-                if (dispatch) {
-                    hypr_send_command(dispatch);
-                } else {
-                    execute_command(c->command);
-                }
-                break;
-            }
-            case CLICK_RUN:
-                execute_command(c->command);
-                break;
-            default:
-                break;
-            }
-            break;
-        }
-    }
+static void reload(WlStatus *ws) {
+    if (ws->popup.visible) popup_destroy(ws);
+    if (ws->tooltip.visible) tooltip_destroy(ws);
+    destroy_back_buffer(ws);
+    if (ws->bar) bar_destroy(ws->bar);
+    config_destroy(ws->cfg);
+    ws->cfg = config_load(config_path());
+    ws->bar = bar_create(ws->width, ws->height, ws->cfg);
+    create_back_buffer(ws);
+    setup_plugin_watches(ws);
+    bar_update_workspaces(ws->bar, ws->dpy);
+    bar_update_lua_plugins(ws->bar);
+    render(ws);
 }
 
-static void pointer_axis(void *data, wl_pointer *,
-    uint32_t time, uint32_t axis, wl_fixed_t value) {
-    auto *ws = (WlStatus *)data;
-    if (axis != 0) return;
-
-    int x = ws->pointer_x, y = ws->pointer_y;
-    for (int i = 0; i < ws->bar->n_clickables; i++) {
-        Clickable *c = &ws->bar->clickables[i];
-        if (x >= c->x && x < c->x + c->w &&
-            y >= c->y && y < c->y + c->h) {
-            if (c->lua_plugin_idx >= 0) {
-                int direction = (value > 0) ? -1 : 1;
-                lua_plugin_call_onscroll(
-                    &ws->bar->lua_plugins[c->lua_plugin_idx], direction);
-                bar_update_lua_plugins(ws->bar);
-                render(ws);
-            }
-            break;
-        }
-    }
-}
-
-static void pointer_frame(void *, wl_pointer *) {}
-
-static void keyboard_keymap(void *data, wl_keyboard *,
-    uint32_t format, int fd, uint32_t size) {
-    auto *ws = (WlStatus *)data;
-    if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) { close(fd); return; }
-    char *map = (char *)mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
-    if (map == MAP_FAILED) { close(fd); return; }
-    ws->xkb_kmap = xkb_keymap_new_from_string(ws->xkb_ctx, map,
-        XKB_KEYMAP_FORMAT_TEXT_V1, (xkb_keymap_compile_flags)0);
-    munmap(map, size);
-    close(fd);
-    if (!ws->xkb_kmap) return;
-    ws->xkb_kstate = xkb_state_new(ws->xkb_kmap);
-}
-
-static void keyboard_enter(void *, wl_keyboard *,
-    uint32_t, wl_surface *, wl_array *) {}
-static void keyboard_leave(void *, wl_keyboard *,
-    uint32_t, wl_surface *) {}
-static void keyboard_key(void *, wl_keyboard *,
-    uint32_t, uint32_t, uint32_t, uint32_t) {}
-
-static void keyboard_modifiers(void *data, wl_keyboard *,
-    uint32_t, uint32_t mods_depressed, uint32_t mods_latched,
-    uint32_t mods_locked, uint32_t group) {
-    auto *ws = (WlStatus *)data;
-    if (ws->xkb_kstate)
-        xkb_state_update_mask(ws->xkb_kstate, mods_depressed, mods_latched, mods_locked, 0, 0, group);
-}
-
-static void keyboard_repeat_info(void *, wl_keyboard *,
-    int32_t, int32_t) {}
-
-static const wl_keyboard_listener keyboard_listener = {
-    .keymap = keyboard_keymap,
-    .enter = keyboard_enter,
-    .leave = keyboard_leave,
-    .key = keyboard_key,
-    .modifiers = keyboard_modifiers,
-    .repeat_info = keyboard_repeat_info,
-};
-
-static const wl_pointer_listener pointer_listener = {
-    .enter = pointer_enter,
-    .leave = pointer_leave,
-    .motion = pointer_motion,
-    .button = pointer_button,
-    .axis = pointer_axis,
-    .frame = pointer_frame,
-};
-
-static void seat_capabilities(void *data, wl_seat *seat,
-    uint32_t capabilities) {
-    auto *ws = (WlStatus *)data;
-    if ((capabilities & 1) && !ws->pointer) {
-        ws->pointer = wl_seat_get_pointer(seat);
-        wl_pointer_add_listener(ws->pointer, &pointer_listener, ws);
-    } else if (!(capabilities & 1) && ws->pointer) {
-        wl_pointer_destroy(ws->pointer);
-        ws->pointer = nullptr;
-    }
-    if ((capabilities & 2) && !ws->keyboard) {
-        ws->keyboard = wl_seat_get_keyboard(seat);
-        wl_keyboard_add_listener(ws->keyboard, &keyboard_listener, ws);
-    } else if (!(capabilities & 2) && ws->keyboard) {
-        wl_keyboard_destroy(ws->keyboard);
-        ws->keyboard = nullptr;
-    }
-}
-
-static void seat_name(void *, wl_seat *, const char *) {}
-
-static const wl_seat_listener seat_listener = {
-    .capabilities = seat_capabilities,
-    .name = seat_name,
-};
-
-static void registry_global(void *data, wl_registry *registry,
-    uint32_t name, const char *interface, uint32_t) {
-    auto *ws = (WlStatus *)data;
-
-    if (strcmp(interface, wl_compositor_interface.name) == 0)
-        ws->compositor = (wl_compositor *)wl_registry_bind(
-            registry, name, &wl_compositor_interface, 4);
-    else if (strcmp(interface, wl_shm_interface.name) == 0)
-        ws->shm = (wl_shm *)wl_registry_bind(
-            registry, name, &wl_shm_interface, 1);
-    else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0)
-        ws->layer_shell = (zwlr_layer_shell_v1 *)wl_registry_bind(
-            registry, name, &zwlr_layer_shell_v1_interface, 4);
-    else if (strcmp(interface, wl_seat_interface.name) == 0) {
-        ws->seat = (wl_seat *)wl_registry_bind(
-            registry, name, &wl_seat_interface, 7);
-        wl_seat_add_listener(ws->seat, &seat_listener, ws);
-    }
-}
-
-static void registry_global_remove(void *, wl_registry *, uint32_t) {}
-
-static const wl_registry_listener registry_listener = {
-    .global = registry_global,
-    .global_remove = registry_global_remove,
-};
-
-static int setup_layer_surface(WlStatus *ws) {
-    ws->surface = wl_compositor_create_surface(ws->compositor);
-    if (!ws->surface) return -1;
-
-    const char *layer_str = config_get(ws->cfg, "bar_layer", "top");
-    auto layer = ZWLR_LAYER_SHELL_V1_LAYER_TOP;
-    if (strcmp(layer_str, "overlay") == 0)
-        layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY;
-    ws->layer_surface = zwlr_layer_shell_v1_get_layer_surface(
-        ws->layer_shell, ws->surface, nullptr, layer, "wlstatus");
-    if (!ws->layer_surface) return -1;
-
-    zwlr_layer_surface_v1_add_listener(ws->layer_surface,
-        &layer_surface_listener, ws);
-
-    int bh = config_get_int(ws->cfg, "bar_height", BAR_HEIGHT);
-    zwlr_layer_surface_v1_set_size(ws->layer_surface, 0, bh);
-
-    uint32_t anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
-    const char *anchor_str = config_get(ws->cfg, "bar_anchor", "top");
-    if (strcmp(anchor_str, "bottom") == 0)
-        anchor |= ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
-    else
-        anchor |= ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
-    zwlr_layer_surface_v1_set_anchor(ws->layer_surface, anchor);
-    if (layer == ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY)
-        zwlr_layer_surface_v1_set_exclusive_zone(ws->layer_surface, 0);
-    else
-        zwlr_layer_surface_v1_set_exclusive_zone(ws->layer_surface, bh);
-
-    wl_surface_commit(ws->surface);
-    wl_display_roundtrip(ws->display);
-
-    if (!ws->configured) {
-        fprintf(stderr, "surface was not configured\n");
-        return -1;
-    }
-    return 0;
+static void on_timer(WlStatus *ws) {
+    if (!ws->bar || !ws->running) return;
+    bar_update_workspaces(ws->bar, ws->dpy);
+    bar_update_lua_plugins(ws->bar);
+    render(ws);
 }
 
 int main() {
     WlStatus ws;
+
     ws.cfg = config_load(config_path());
     int bh = config_get_int(ws.cfg, "bar_height", BAR_HEIGHT);
-    ws.width = 1920;
+    auto *dpy = XOpenDisplay(nullptr);
+    if (!dpy) {
+        fprintf(stderr, "failed to connect to X11 display\n");
+        return 1;
+    }
+    XSetErrorHandler(x11_error_handler);
+    ws.dpy = dpy;
+    ws.screen = DefaultScreen(dpy);
+    ws.width = DisplayWidth(dpy, ws.screen);
     ws.height = bh;
     ws.running = true;
 
-    ws.display = wl_display_connect(nullptr);
-    if (!ws.display) {
-        fprintf(stderr, "failed to connect to wayland display\n");
-        return 1;
-    }
+    Window root = RootWindow(dpy, ws.screen);
 
-    wl_registry *registry = wl_display_get_registry(ws.display);
-    wl_registry_add_listener(registry, &registry_listener, &ws);
-    wl_display_roundtrip(ws.display);
+    XSetWindowAttributes attrs;
+    attrs.override_redirect = True;
+    attrs.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
+        PointerMotionMask | LeaveWindowMask | SubstructureNotifyMask |
+        StructureNotifyMask;
 
-    if (!ws.compositor || !ws.shm || !ws.layer_shell) {
-        fprintf(stderr, "missing required wayland globals\n");
-        return 1;
-    }
+    const char *anchor_str = config_get(ws.cfg, "bar_anchor", "top");
+    bool bar_on_bottom = (strcmp(anchor_str, "bottom") == 0);
+    int win_y = bar_on_bottom ? DisplayHeight(dpy, ws.screen) - bh : 0;
 
-    ws.xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-    if (!ws.xkb_ctx)
-        fprintf(stderr, "warning: failed to create xkb context\n");
+    ws.win = XCreateWindow(dpy, root, 0, win_y, ws.width, ws.height, 0,
+        CopyFromParent, InputOutput, CopyFromParent,
+        CWOverrideRedirect | CWEventMask, &attrs);
 
-    if (setup_layer_surface(&ws) < 0)
-        return 1;
+    XMapWindow(dpy, ws.win);
+    ws.gc = XCreateGC(dpy, ws.win, 0, nullptr);
+
+    ws.bar = bar_create(ws.width, ws.height, ws.cfg);
+
+    create_back_buffer(&ws);
+    setup_tray(&ws);
+    setup_plugin_watches(&ws);
+    bar_update_workspaces(ws.bar, ws.dpy);
+    bar_update_lua_plugins(ws.bar);
+    render(&ws);
 
     ws.timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
     if (ws.timer_fd >= 0) {
@@ -1210,10 +791,6 @@ int main() {
         ts.it_interval.tv_sec = 1;
         timerfd_settime(ws.timer_fd, 0, &ts, nullptr);
     }
-
-    ws.hypr_ev_fd = hypr_connect_event_socket();
-    if (ws.hypr_ev_fd < 0)
-        fprintf(stderr, "warning: could not connect to hyprland event socket\n");
 
     struct sigaction sa = {};
     sa.sa_handler = handle_sighup;
@@ -1235,45 +812,130 @@ int main() {
         }
     }
 
-    setup_plugin_watches(&ws);
-    init_window_tracking(&ws);
+    XSelectInput(dpy, root, SubstructureNotifyMask | PropertyChangeMask);
+
+    int x11_fd = ConnectionNumber(dpy);
 
     while (ws.running) {
-        struct pollfd fds[5] = {
-            { .fd = wl_display_get_fd(ws.display), .events = POLLIN },
-            { .fd = ws.timer_fd, .events = POLLIN },
-            { .fd = ws.inotify_fd, .events = POLLIN },
-            { .fd = ws.hypr_ev_fd, .events = POLLIN },
-            { .fd = ws.plugin_ifd, .events = POLLIN },
-        };
-        int nfds = 1;
-        if (ws.timer_fd >= 0) nfds = 2;
-        if (ws.inotify_fd >= 0) nfds = 3;
-        if (ws.hypr_ev_fd >= 0) nfds = 4;
-        if (ws.plugin_ifd >= 0) nfds = 5;
-        bool has_display_data = false;
+        while (XPending(dpy)) {
+            XEvent ev;
+            XNextEvent(dpy, &ev);
 
-        while (wl_display_prepare_read(ws.display) != 0)
-            wl_display_dispatch_pending(ws.display);
-        wl_display_flush(ws.display);
-
-        if (poll(fds, nfds, -1) < 0) {
-            if (errno == EINTR) {
-                wl_display_cancel_read(ws.display);
-                goto check_reload;
+            switch (ev.type) {
+            case Expose:
+                if (ev.xexpose.count == 0) {
+                    if (ev.xexpose.window == ws.win)
+                        render(&ws);
+                    else if (ev.xexpose.window == ws.popup.win)
+                        popup_render(&ws);
+                    else if (ev.xexpose.window == ws.tooltip.win)
+                        tooltip_render(&ws);
+                }
+                break;
+            case ButtonPress:
+                if (ev.xbutton.window == ws.win)
+                    handle_button(&ws, &ev.xbutton);
+                else if (ev.xbutton.window == ws.popup.win) {
+                    int x = ev.xbutton.x, y = ev.xbutton.y;
+                    if (x >= ws.popup.confirm_btn_x && x < ws.popup.confirm_btn_x + ws.popup.confirm_btn_w &&
+                        y >= ws.popup.confirm_btn_y && y < ws.popup.confirm_btn_y + ws.popup.confirm_btn_h) {
+                        const char *cmds[] = {"systemctl poweroff", "systemctl reboot", "systemctl suspend"};
+                        execute_command(cmds[ws.popup.action]);
+                        popup_destroy(&ws);
+                    } else if (x >= ws.popup.cancel_btn_x && x < ws.popup.cancel_btn_x + ws.popup.cancel_btn_w &&
+                        y >= ws.popup.cancel_btn_y && y < ws.popup.cancel_btn_y + ws.popup.cancel_btn_h) {
+                        popup_destroy(&ws);
+                    } else {
+                        popup_destroy(&ws);
+                    }
+                }
+                break;
+            case MotionNotify:
+                if (ev.xmotion.window == ws.win)
+                    handle_motion(&ws, &ev.xmotion);
+                else if (ev.xmotion.window == ws.popup.win) {
+                    int old = ws.popup.hovered_btn;
+                    ws.popup.hovered_btn = -1;
+                    int x = ev.xmotion.x, y = ev.xmotion.y;
+                    if (x >= ws.popup.confirm_btn_x && x < ws.popup.confirm_btn_x + ws.popup.confirm_btn_w &&
+                        y >= ws.popup.confirm_btn_y && y < ws.popup.confirm_btn_y + ws.popup.confirm_btn_h)
+                        ws.popup.hovered_btn = 0;
+                    else if (x >= ws.popup.cancel_btn_x && x < ws.popup.cancel_btn_x + ws.popup.cancel_btn_w &&
+                        y >= ws.popup.cancel_btn_y && y < ws.popup.cancel_btn_y + ws.popup.cancel_btn_h)
+                        ws.popup.hovered_btn = 1;
+                    if (old != ws.popup.hovered_btn)
+                        popup_render(&ws);
+                }
+                break;
+            case LeaveNotify:
+                if (ev.xcrossing.window == ws.win)
+                    handle_leave(&ws);
+                else if (ev.xcrossing.window == ws.popup.win) {
+                    if (ws.popup.hovered_btn != -1) {
+                        ws.popup.hovered_btn = -1;
+                        popup_render(&ws);
+                    }
+                }
+                break;
+            case PropertyNotify:
+                if (ev.xproperty.window == root &&
+                    ev.xproperty.state == PropertyNewValue) {
+                    bar_update_workspaces(ws.bar, ws.dpy);
+                    render(&ws);
+                }
+                break;
+            case ClientMessage:
+                tray_handle_client_message(&ws, &ev.xclient);
+                break;
+            case DestroyNotify:
+                if (ev.xdestroywindow.event == ws.win) {
+                    ws.running = false;
+                }
+                if (ev.xdestroywindow.window == ws.popup.win)
+                    ws.popup.visible = false;
+                if (ev.xdestroywindow.window == ws.tooltip.win)
+                    ws.tooltip.visible = false;
+                for (int i = 0; i < ws.n_tray_clients; i++) {
+                    if (ws.tray_clients[i].win == ev.xdestroywindow.window) {
+                        tray_remove_client(&ws, ev.xdestroywindow.window);
+                        break;
+                    }
+                }
+                break;
+            case UnmapNotify:
+                for (int i = 0; i < ws.n_tray_clients; i++) {
+                    if (ws.tray_clients[i].win == ev.xunmap.window) {
+                        tray_remove_client(&ws, ev.xunmap.window);
+                        break;
+                    }
+                }
+                break;
             }
+        }
+
+        struct pollfd fds[3];
+        int nfds = 0;
+        fds[nfds].fd = x11_fd;
+        fds[nfds].events = POLLIN;
+        nfds++;
+
+        if (ws.timer_fd >= 0) {
+            fds[nfds].fd = ws.timer_fd;
+            fds[nfds].events = POLLIN;
+            nfds++;
+        }
+
+        if (ws.inotify_fd >= 0) {
+            fds[nfds].fd = ws.inotify_fd;
+            fds[nfds].events = POLLIN;
+            nfds++;
+        }
+
+        if (poll(fds, nfds, 50) < 0) {
+            if (errno == EINTR)
+                goto check_reload;
             break;
         }
-
-        if (fds[0].revents & POLLIN) {
-            wl_display_read_events(ws.display);
-            has_display_data = true;
-        } else {
-            wl_display_cancel_read(ws.display);
-        }
-
-        if (has_display_data)
-            wl_display_dispatch_pending(ws.display);
 
         if (ws.timer_fd >= 0 && (fds[1].revents & POLLIN)) {
             uint64_t exp;
@@ -1281,47 +943,25 @@ int main() {
             on_timer(&ws);
         }
 
-        if (ws.hypr_ev_fd >= 0 && (fds[3].revents & POLLIN)) {
-            if (hypr_read_events(ws.hypr_ev_fd, &ws)) {
-                bar_update_workspaces(ws.bar);
-                bar_update_workspace_names(ws.bar, ws.tracked_windows, ws.n_tracked_windows);
-                bar_update_lua_plugins(ws.bar);
-                render(&ws);
-            }
-        }
-
-        if (ws.plugin_ifd >= 0 && (fds[4].revents & POLLIN)) {
-            char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
-            ssize_t len = read(ws.plugin_ifd, buf, sizeof(buf));
-            if (len > 0) {
-                bool ticked = false;
-                for (char *p = buf; p < buf + len; p += sizeof(struct inotify_event) + ((const struct inotify_event *)p)->len) {
-                    const auto *ev = (const struct inotify_event *)p;
-                    for (int i = 0; i < ws.bar->n_lua_plugins; i++) {
-                        if (ws.bar->lua_plugins[i].watch_wd == (int)ev->wd) {
-                            ws.bar->lua_plugins[i].last_check = 0;
-                            ticked = true;
-                        }
-                    }
-                }
-                if (ticked) {
-                    bar_update_lua_plugins(ws.bar);
-                    render(&ws);
-                }
-            }
-        }
-
         if (ws.inotify_fd >= 0 && (fds[2].revents & POLLIN)) {
             char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
             ssize_t len = read(ws.inotify_fd, buf, sizeof(buf));
             if (len > 0) {
-                for (char *p = buf; p < buf + len; p += sizeof(struct inotify_event) + ((const struct inotify_event *)p)->len) {
+                for (char *p = buf; p < buf + len; ) {
                     const auto *ev = (const struct inotify_event *)p;
                     if (ev->len > 0 && strcmp(ev->name, "config") == 0) {
                         reload(&ws);
                         break;
                     }
+                    for (int i = 0; i < ws.bar->n_lua_plugins; i++) {
+                        if (ws.bar->lua_plugins[i].watch_wd == (int)ev->wd) {
+                            ws.bar->lua_plugins[i].last_check = 0;
+                        }
+                    }
+                    p += sizeof(struct inotify_event) + ev->len;
                 }
+                bar_update_lua_plugins(ws.bar);
+                render(&ws);
             }
         }
 
@@ -1334,20 +974,20 @@ check_reload:
 
     if (ws.timer_fd >= 0) close(ws.timer_fd);
     if (ws.inotify_fd >= 0) close(ws.inotify_fd);
-    if (ws.hypr_ev_fd >= 0) close(ws.hypr_ev_fd);
-    if (ws.plugin_ifd >= 0) close(ws.plugin_ifd);
-    if (ws.popup.visible) popup_destroy(&ws);
-    if (ws.tooltip.visible) tooltip_destroy(&ws);
-    destroy_buffer(&ws);
-    if (ws.pointer) wl_pointer_destroy(ws.pointer);
-    if (ws.seat) wl_seat_destroy(ws.seat);
-    if (ws.layer_surface) zwlr_layer_surface_v1_destroy(ws.layer_surface);
-    if (ws.surface) wl_surface_destroy(ws.surface);
-    if (ws.layer_shell) zwlr_layer_shell_v1_destroy(ws.layer_shell);
-    if (ws.compositor) wl_compositor_destroy(ws.compositor);
-    if (ws.shm) wl_shm_destroy(ws.shm);
+    tooltip_destroy(&ws);
+    popup_destroy(&ws);
+    destroy_back_buffer(&ws);
     bar_destroy(ws.bar);
     config_destroy(ws.cfg);
-    wl_display_disconnect(ws.display);
+    for (int i = 0; i < ws.n_tray_clients; i++) {
+        if (ws.tray_clients[i].surface)
+            cairo_surface_destroy(ws.tray_clients[i].surface);
+        if (ws.tray_clients[i].pixmap)
+            XFreePixmap(ws.dpy, ws.tray_clients[i].pixmap);
+    }
+    if (ws.tray_win) XDestroyWindow(dpy, ws.tray_win);
+    if (ws.gc) XFreeGC(dpy, ws.gc);
+    if (ws.win) XDestroyWindow(dpy, ws.win);
+    XCloseDisplay(dpy);
     return 0;
 }
