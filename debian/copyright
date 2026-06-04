@@ -1,5 +1,5 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: wlstatus
+Upstream-Name: orbit-status
 
 Files: *
 Copyright: 2026 steven66619

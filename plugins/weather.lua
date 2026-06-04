@@ -3,7 +3,7 @@ interval = 300
 local function get_location()
     local home = os.getenv("HOME")
     if not home then return "" end
-    local f = io.open(home .. "/.config/wlstatus/config", "r")
+    local f = io.open(home .. "/.config/orbit-status/config", "r")
     if not f then return "" end
     for line in f:lines() do
         line = line:gsub("#.*$", "")

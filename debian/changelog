@@ -1,4 +1,4 @@
-wlstatus (1.2-1) unstable; urgency=medium
+orbit-status (1.2-1) unstable; urgency=medium
 
   * Hyprland IPC: real-time workspace/window events via event socket.
   * Track windows per workspace, display pretty workspace names.
@@ -8,13 +8,13 @@ wlstatus (1.2-1) unstable; urgency=medium
 
  -- steven66619 <ste@example.com>  Tue, 19 May 2026 22:00:00 +0000
 
-wlstatus (1.1-2) unstable; urgency=medium
+orbit-status (1.1-2) unstable; urgency=medium
 
   * Add bundled Lua plugin for weather.
 
  -- steven66619 <ste@example.com>  Sun, 17 May 2026 22:40:00 +0000
 
-wlstatus (1.1-1) unstable; urgency=medium
+orbit-status (1.1-1) unstable; urgency=medium
 
   * Lua plugin architecture — all system modules are now Lua scripts.
   * New config keys: lua_plugin_N_path, show_lua_plugin_N, lua_plugin_N_prefix,
@@ -26,13 +26,13 @@ wlstatus (1.1-1) unstable; urgency=medium
 
  -- steven66619 <ste@example.com>  Sun, 17 May 2026 22:10:00 +0000
 
-wlstatus (1.0-2) unstable; urgency=medium
+orbit-status (1.0-2) unstable; urgency=medium
 
   * Remove application launcher.
 
  -- steven66619 <ste@example.com>  Sat, 16 May 2026 21:25:00 +0000
 
-wlstatus (1.0-1) unstable; urgency=medium
+orbit-status (1.0-1) unstable; urgency=medium
 
   * Initial package.
 

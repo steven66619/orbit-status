@@ -1,0 +1,119 @@
+# orbit-status configuration file
+# Place this at ~/.config/orbit-status/config
+#
+# Format: key = value
+# Colors are: r g b a  (each 0.0 - 1.0)
+# Integers and strings as expected
+
+# === Bar ===
+# bar_height = 38
+# bar_anchor = top          # "top" or "bottom"
+# bar_padding = 8
+# bar_bg_color              # optional; if unset uses dark gradient
+# accent_color = 0.0 0.90 1.0 1.0
+
+# === Power Buttons ===
+# show_power = 1
+# icon_size = 24
+# glow_width = 8
+# glow_alpha_percent = 25
+# icon_alpha_percent = 90
+# icon_hover_alpha_percent = 100
+# poweroff_color = 1.0 0.2 0.3 1.0
+# reboot_color = 1.0 0.6 0.0 1.0
+# suspend_color = 0.6 0.2 1.0 1.0
+
+# === Workspaces ===
+# show_hyperion = 1
+# show_hyperion_logo = 1
+# hyperion_color = 0.92 0.72 0.0 1.0
+# workspace_font_size = 12
+
+# === Clock ===
+# show_clock = 1
+# date_format = %a %b %d  %H:%M
+
+# === Pill Styling ===
+# pill_pad_h = 4
+# pill_pad_w = 8
+# pill_gap = 6
+
+# === Module Toggles ===
+# show_cpu = 1
+# show_mem = 1
+# show_updates = 1
+# show_disk = 1
+# show_volume = 1
+# show_network = 1
+# show_battery = 1
+
+# === Module Icons ===
+# cpu_icon = CPU
+# mem_icon = MEM
+# updates_icon = UPD
+# disk_icon = DSK
+# volume_icon = VOL
+# battery_icon = BAT
+
+# === Updates ===
+# update_interval = 30
+# update_cmd =              # auto-detects pacman/dnf/apt if empty
+# auto_update = 0
+# auto_update_cmd = orbit-status-update
+
+# === Disk ===
+# disk_interval = 120
+# disk_path = /
+# disk_warn_threshold = 90
+# disk_warn_color = 1.0 0.6 0.0 1.0
+
+# === Alerts ===
+# updates_alert_color = 1.0 0.2 0.2 1.0
+
+# === Click Commands (run on click) ===
+# click_cpu =
+# click_mem =
+# click_updates =
+# click_disk =
+# click_volume =
+# click_network =
+# click_battery =
+
+# === Tooltips ===
+# tooltip_cmd =             # if empty, built-in tooltips are used per module
+
+# === Lua Plugins (up to 12) ===
+# lua_plugin_1_path = ~/.config/orbit-status/plugins/workspaces.lua
+# lua_plugin_1_interval = 1
+# lua_plugin_1_prefix = WS
+# click_lua_plugin_1 =
+# lua_plugin_1_color = 0.6 1.0 0.6 1.0
+#
+# === Custom Modules (up to 4) ===
+# show_custom_1 = 0
+# custom_1_cmd =
+# custom_1_interval = 60
+# custom_1_prefix =
+# custom_1_color = 0.5 0.5 1.0 1.0
+# click_custom_1 =
+#
+# show_custom_2 = 0
+# custom_2_cmd =
+# custom_2_interval = 60
+# custom_2_prefix =
+# custom_2_color = 0.5 0.5 1.0 1.0
+# click_custom_2 =
+#
+# show_custom_3 = 0
+# custom_3_cmd =
+# custom_3_interval = 60
+# custom_3_prefix =
+# custom_3_color = 0.5 0.5 1.0 1.0
+# click_custom_3 =
+#
+# show_custom_4 = 0
+# custom_4_cmd =
+# custom_4_interval = 60
+# custom_4_prefix =
+# custom_4_color = 0.5 0.5 1.0 1.0
+# click_custom_4 =

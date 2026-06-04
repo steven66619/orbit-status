@@ -1,10 +1,10 @@
-# Building wlstatus
+# Building orbit-status
 
 A lightweight, information-dense status bar written in modern, type-safe C++17 and scriptable via modular Lua plugins. It features a zero-fork architecture that parses hardware statistics directly from the virtual Linux `/proc` filesystem with near-zero overhead.
 
 ## Dependencies
 
-Ensure the following development packages are installed on your system before compiling. Because `wlstatus` relies strictly on core kernel streams and raw protocol sockets, it is completely independent of systemd or specific init systems.
+Ensure the following development packages are installed on your system before compiling. Because `orbit-status` relies strictly on core kernel streams and raw protocol sockets, it is completely independent of systemd or specific init systems.
 
 * **Compiler**: `g++` (supporting C++17) or `clang++`
 * **Build System**: `make`
@@ -41,14 +41,14 @@ Compiles the bar to listen directly to the native Hyprland UNIX domain socket (`
 ```bash
 make wayland
 ```
-*This generates a standalone binary named `wlstatus` optimized for Wayland.*
+*This generates a standalone binary named `orbit-status` optimized for Wayland.*
 
 ### 2. Xorg Target (XMonad Property Atom)
 Compiles the bar to hook directly into the X11 Root Window via `Xlib`, using an efficient event-driven listener that blocks until the `_XMONAD_LOG` atom mutates.
 ```bash
 make xorg
 ```
-*This generates a standalone binary named `wlstatus-x11` optimized for Xorg environments.*
+*This generates a standalone binary named `orbit-status-x11` optimized for Xorg environments.*
 
 ### 3. Workspace Cleanup
 To wipe out temporary object tracking binaries and safely reset your workspace development environment before a new compilation pass:

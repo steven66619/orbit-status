@@ -43,7 +43,7 @@ struct TrayClient {
     cairo_surface_t *surface;
 };
 
-struct WlStatus {
+struct OrbitStatus {
     Display *dpy = nullptr;
     Window win = 0;
     int screen = 0;
@@ -121,19 +121,19 @@ static const char *config_path() {
     const char *home = getenv("HOME");
     if (!home) return nullptr;
     static char buf[512];
-    snprintf(buf, sizeof(buf), "%s/.config/wlstatus/config", home);
+    snprintf(buf, sizeof(buf), "%s/.config/orbit-status/config", home);
     return buf;
 }
 
-static void render(WlStatus *ws);
-static void popup_destroy(WlStatus *ws);
-static void tooltip_destroy(WlStatus *ws);
+static void render(OrbitStatus *ws);
+static void popup_destroy(OrbitStatus *ws);
+static void tooltip_destroy(OrbitStatus *ws);
 
 static Atom get_atom(Display *dpy, const char *name) {
     return XInternAtom(dpy, name, False);
 }
 
-static void init_atoms(WlStatus *ws) {
+static void init_atoms(OrbitStatus *ws) {
     char buf[32];
     snprintf(buf, sizeof(buf), "_NET_SYSTEM_TRAY_S%d", ws->screen);
     ws->tray_selection = get_atom(ws->dpy, buf);
@@ -142,7 +142,7 @@ static void init_atoms(WlStatus *ws) {
     ws->xembed_info = get_atom(ws->dpy, "_XEMBED_INFO");
 }
 
-static void tray_add_client(WlStatus *ws, Window client_win) {
+static void tray_add_client(OrbitStatus *ws, Window client_win) {
     if (ws->n_tray_clients >= MAX_TRAY_CLIENTS) return;
 
     XWindowAttributes attr;
@@ -189,7 +189,7 @@ static void tray_add_client(WlStatus *ws, Window client_win) {
     XSendEvent(ws->dpy, client_win, False, NoEventMask, &ev);
 }
 
-static void tray_remove_client(WlStatus *ws, Window win) {
+static void tray_remove_client(OrbitStatus *ws, Window win) {
     for (int i = 0; i < ws->n_tray_clients; i++) {
         if (ws->tray_clients[i].win == win) {
             if (ws->tray_clients[i].surface)
@@ -203,7 +203,7 @@ static void tray_remove_client(WlStatus *ws, Window win) {
     }
 }
 
-static void tray_handle_client_message(WlStatus *ws, XClientMessageEvent *ev) {
+static void tray_handle_client_message(OrbitStatus *ws, XClientMessageEvent *ev) {
     if (ev->message_type != ws->tray_opcode) return;
     if ((Atom)ev->data.l[1] != SYSTEM_TRAY_REQUEST_DOCK) return;
     Window client_win = (Window)ev->data.l[2];
@@ -211,7 +211,7 @@ static void tray_handle_client_message(WlStatus *ws, XClientMessageEvent *ev) {
     render(ws);
 }
 
-static bool tray_claim_selection(WlStatus *ws) {
+static bool tray_claim_selection(OrbitStatus *ws) {
     ws->tray_win = XCreateSimpleWindow(ws->dpy, RootWindow(ws->dpy, ws->screen),
         0, 0, 1, 1, 0, 0, 0);
     XSetSelectionOwner(ws->dpy, ws->tray_selection, ws->tray_win, CurrentTime);
@@ -235,7 +235,7 @@ static bool tray_claim_selection(WlStatus *ws) {
     return true;
 }
 
-static void setup_tray(WlStatus *ws) {
+static void setup_tray(OrbitStatus *ws) {
     init_atoms(ws);
 
     int comp_event_base, comp_error_base;
@@ -252,7 +252,7 @@ static void setup_tray(WlStatus *ws) {
     }
 }
 
-static void setup_plugin_watches(WlStatus *ws) {
+static void setup_plugin_watches(OrbitStatus *ws) {
     if (!ws->bar) return;
     ws->inotify_fd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
     if (ws->inotify_fd < 0) return;
@@ -272,7 +272,7 @@ static void setup_plugin_watches(WlStatus *ws) {
         const char *home = getenv("HOME");
         if (home) {
             static char dir[256];
-            snprintf(dir, sizeof(dir), "%s/.config/wlstatus/plugins", home);
+            snprintf(dir, sizeof(dir), "%s/.config/orbit-status/plugins", home);
             plugins_dir = dir;
         }
     }
@@ -312,7 +312,7 @@ static void setup_plugin_watches(WlStatus *ws) {
     }
 }
 
-static void create_back_buffer(WlStatus *ws) {
+static void create_back_buffer(OrbitStatus *ws) {
     if (ws->back_pixmap) {
         cairo_destroy(ws->back_cr);
         cairo_surface_destroy(ws->back_cairo_surface);
@@ -325,7 +325,7 @@ static void create_back_buffer(WlStatus *ws) {
     ws->back_cr = cairo_create(ws->back_cairo_surface);
 }
 
-static void destroy_back_buffer(WlStatus *ws) {
+static void destroy_back_buffer(OrbitStatus *ws) {
     if (ws->back_cr) cairo_destroy(ws->back_cr);
     ws->back_cr = nullptr;
     if (ws->back_cairo_surface) cairo_surface_destroy(ws->back_cairo_surface);
@@ -334,7 +334,7 @@ static void destroy_back_buffer(WlStatus *ws) {
     ws->back_pixmap = 0;
 }
 
-static void render(WlStatus *ws) {
+static void render(OrbitStatus *ws) {
     if (!ws->back_cr) create_back_buffer(ws);
 
     int tray_w = ws->n_tray_clients * (ws->tray_icon_size + 4);
@@ -399,7 +399,7 @@ static void execute_command(const char *cmd) {
     }
 }
 
-static void popup_render(WlStatus *ws) {
+static void popup_render(OrbitStatus *ws) {
     if (!ws->popup.visible) return;
     int w = ws->popup.width, h = ws->popup.height;
 
@@ -494,14 +494,14 @@ static void popup_render(WlStatus *ws) {
     XFreePixmap(ws->dpy, pm);
 }
 
-static void popup_destroy(WlStatus *ws) {
+static void popup_destroy(OrbitStatus *ws) {
     if (ws->popup.visible && ws->popup.win) {
         XUnmapWindow(ws->dpy, ws->popup.win);
         ws->popup.visible = false;
     }
 }
 
-static void popup_create(WlStatus *ws, int action) {
+static void popup_create(OrbitStatus *ws, int action) {
     if (ws->popup.visible) popup_destroy(ws);
 
     ws->popup.width = 175;
@@ -526,7 +526,7 @@ static void popup_create(WlStatus *ws, int action) {
     popup_render(ws);
 }
 
-static void tooltip_render(WlStatus *ws) {
+static void tooltip_render(OrbitStatus *ws) {
     if (!ws->tooltip.visible) return;
     int w = ws->tooltip.width, h = ws->tooltip.height;
 
@@ -571,7 +571,7 @@ static void tooltip_render(WlStatus *ws) {
     XFreePixmap(ws->dpy, pm);
 }
 
-static void tooltip_destroy(WlStatus *ws) {
+static void tooltip_destroy(OrbitStatus *ws) {
     if (ws->tooltip.visible && ws->tooltip.win) {
         XUnmapWindow(ws->dpy, ws->tooltip.win);
         ws->tooltip.visible = false;
@@ -579,7 +579,7 @@ static void tooltip_destroy(WlStatus *ws) {
     ws->tooltip.hovered_clickable = -1;
 }
 
-static void tooltip_show(WlStatus *ws, const char *text, int hover_x, int hover_y) {
+static void tooltip_show(OrbitStatus *ws, const char *text, int hover_x, int hover_y) {
     if (ws->tooltip.visible && strcmp(ws->tooltip.text, text) == 0)
         return;
 
@@ -615,7 +615,7 @@ static void tooltip_show(WlStatus *ws, const char *text, int hover_x, int hover_
     tooltip_render(ws);
 }
 
-static void handle_button(WlStatus *ws, XButtonEvent *ev) {
+static void handle_button(OrbitStatus *ws, XButtonEvent *ev) {
     if (ev->button != Button1) return;
     int x = ev->x, y = ev->y;
 
@@ -663,7 +663,7 @@ static void handle_button(WlStatus *ws, XButtonEvent *ev) {
     }
 }
 
-static void handle_motion(WlStatus *ws, XMotionEvent *ev) {
+static void handle_motion(OrbitStatus *ws, XMotionEvent *ev) {
     int x = ev->x, y = ev->y;
     ws->pointer_x = x;
     ws->pointer_y = y;
@@ -710,14 +710,14 @@ static void handle_motion(WlStatus *ws, XMotionEvent *ev) {
     }
 }
 
-static void handle_leave(WlStatus *ws) {
+static void handle_leave(OrbitStatus *ws) {
     bar_clear_hover(ws->bar);
     render(ws);
     if (ws->tooltip.visible)
         tooltip_destroy(ws);
 }
 
-static void reload(WlStatus *ws) {
+static void reload(OrbitStatus *ws) {
     if (ws->popup.visible) popup_destroy(ws);
     if (ws->tooltip.visible) tooltip_destroy(ws);
     destroy_back_buffer(ws);
@@ -732,7 +732,7 @@ static void reload(WlStatus *ws) {
     render(ws);
 }
 
-static void on_timer(WlStatus *ws) {
+static void on_timer(OrbitStatus *ws) {
     if (!ws->bar || !ws->running) return;
     bar_update_workspaces(ws->bar, ws->dpy);
     bar_update_lua_plugins(ws->bar);
@@ -740,7 +740,7 @@ static void on_timer(WlStatus *ws) {
 }
 
 int main() {
-    WlStatus ws;
+    OrbitStatus ws;
 
     ws.cfg = config_load(config_path());
     int bh = config_get_int(ws.cfg, "bar_height", BAR_HEIGHT);

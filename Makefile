@@ -3,7 +3,7 @@ CXX := g++
 STD := -std=c++17
 WARN := -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 
-PLUGINS_DIR := $(DESTDIR)$(PREFIX)/share/wlstatus/plugins
+PLUGINS_DIR := $(DESTDIR)$(PREFIX)/share/orbit-status/plugins
 
 CXXFLAGS := $(CXXFLAGS) $(STD) $(WARN) \
 	$(shell pkg-config --cflags x11 cairo pangocairo lua5.4)
@@ -14,20 +14,20 @@ build/%.o: %.cpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-wlstatus: $(OBJS)
+orbit-status: $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDLIBS)
 
 clean:
-	rm -rf wlstatus build
+	rm -rf orbit-status build
 
-install: wlstatus
-	install -Dm755 wlstatus $(DESTDIR)$(PREFIX)/bin/wlstatus
-	install -Dm755 scripts/bar-update $(DESTDIR)$(PREFIX)/bin/wlstatus-update
+install: orbit-status
+	install -Dm755 orbit-status $(DESTDIR)$(PREFIX)/bin/orbit-status
+	install -Dm755 scripts/bar-update $(DESTDIR)$(PREFIX)/bin/orbit-status-update
 	install -d $(PLUGINS_DIR)
 	install -m644 plugins/*.lua $(PLUGINS_DIR)/ 2>/dev/null || true
 
 uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/wlstatus
-	rm -rf $(DESTDIR)$(PREFIX)/share/wlstatus/plugins
+	rm -f $(DESTDIR)$(PREFIX)/bin/orbit-status
+	rm -rf $(DESTDIR)$(PREFIX)/share/orbit-status/plugins
 
 .PHONY: clean install uninstall

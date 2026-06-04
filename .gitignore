@@ -1,5 +1,5 @@
 *.o
-wlstatus
+orbit-status
 wlr-layer-shell-unstable-v1-client.c
 wlr-layer-shell-unstable-v1-client.h
 xdg-shell-client.c

@@ -9,14 +9,14 @@ build:
 	make PREFIX=$(PREFIX)
 
 install: build
-	make install PREFIX=$(PREFIX) DESTDIR=$(CURDIR)/debian/wlstatus
+	make install PREFIX=$(PREFIX) DESTDIR=$(CURDIR)/debian/orbit-status
 
 binary-arch: install
-	mkdir -p $(CURDIR)/debian/wlstatus/DEBIAN
-	awk '/^Package:/ {p=1} p' debian/control > $(CURDIR)/debian/wlstatus/DEBIAN/control
+	mkdir -p $(CURDIR)/debian/orbit-status/DEBIAN
+	awk '/^Package:/ {p=1} p' debian/control > $(CURDIR)/debian/orbit-status/DEBIAN/control
 	sed -n 's/.*(\(.*\)).*/\1/p' debian/changelog | head -1 | \
-	    xargs -I{} echo "Version: {}" >> $(CURDIR)/debian/wlstatus/DEBIAN/control
-	dpkg-deb --root-owner-group --build $(CURDIR)/debian/wlstatus $(CURDIR)/..
+	    xargs -I{} echo "Version: {}" >> $(CURDIR)/debian/orbit-status/DEBIAN/control
+	dpkg-deb --root-owner-group --build $(CURDIR)/debian/orbit-status $(CURDIR)/..
 
 binary: binary-arch
 

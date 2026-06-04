@@ -1,7 +1,7 @@
 # Xorg/X11 Support Plan
 
 ## Goal
-Make wlstatus work with X11 window managers (primarily Xmonad via EWMH).
+Make orbit-status work with X11 window managers (primarily Xmonad via EWMH).
 
 ## Approach
 Abstract the display backend so both Wayland and X11 work from the same binary.

@@ -1,22 +1,22 @@
-# wlstatus
+# orbit-status
 
 An ultra-lightweight, high-performance, information-dense status bar built in pure, type-safe C++17 and fully scriptable via modular Lua plugins. 
 
-Inspired by the clean, responsive aesthetic of the **Distro Tube Operating System (DTOS)**, `wlstatus` provides a modern alternative to traditional monolithic bars. It operates on a zero-fork architecture, querying performance metrics directly from the Linux kernel to ensure an ultra-low footprint across all Linux distributions.
+Inspired by the clean, responsive aesthetic of the **Distro Tube Operating System (DTOS)**, `orbit-status` provides a modern alternative to traditional monolithic bars. It operates on a zero-fork architecture, querying performance metrics directly from the Linux kernel to ensure an ultra-low footprint across all Linux distributions.
 
 ## Key Features
 
 * **Zero-Fork Statistics Engine**: Parses `/proc/stat` and `/proc/meminfo` continuously using static `std::ifstream` data streams. It never calls external system applications or subshells, guaranteeing near-zero CPU cycles are wasted on updating the bar itself.
 * **Dual-Protocol Compositor Architecture**: Employs compile-time conditional C++ preprocessing flags to seamlessly swap backend layers. It natively drives Wayland events (via Hyprland UNIX domain socket bindings) or legacy Xorg events (via X11 property notify root window atom listeners for XMonad).
 * **Isolated Lua Sandboxing**: Loads every discrete status pill into its own independent, sandboxed Lua engine state. Plugins execute safely in separate frames without risking memory access collisions or UI lock-ups.
-* **Systemd-Independent Compatibility**: Retains absolute portability. Because data tracking bypasses systemd APIs entirely, `wlstatus` runs out of the box on alternative init systems including **OpenRC**, **runit**, and **s6**, making it a perfect fit for distributions like Void Linux, Artix, or Alpine.
+* **Systemd-Independent Compatibility**: Retains absolute portability. Because data tracking bypasses systemd APIs entirely, `orbit-status` runs out of the box on alternative init systems including **OpenRC**, **runit**, and **s6**, making it a perfect fit for distributions like Void Linux, Artix, or Alpine.
 
 ## Architectural Layout
 
 ```text
                    ┌──► Wayland Target ──► Reads Hyprland Unix Socket (.socket2.sock)
                    │
-[wlstatus C++ Core]┤
+[orbit-status C++ Core]┤
                    │
                    └──► Xorg Target ─────► Listens to X11 Root Window (_XMONAD_LOG)
                            │
