@@ -38,7 +38,7 @@ int lua_plugin_init(LuaPlugin *p, const char *path) {
         p->interval = (int)lua_tointeger(L, -1);
     lua_pop(L, 1);
 
-    p->last_check = time(nullptr);
+    p->last_check = 0;
     return 0;
 }
 
@@ -50,7 +50,7 @@ int lua_plugin_init_shell(LuaPlugin *p, const char *cmd, int interval_sec) {
     p->output[0] = '\0';
     p->last_check = 0;
     p->interval = interval_sec > 0 ? interval_sec : 5;
-    p->last_check = time(nullptr);
+    p->last_check = 0;
     return 0;
 }
 
