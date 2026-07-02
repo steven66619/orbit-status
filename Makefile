@@ -16,7 +16,7 @@ ifeq ($(UNAME_S), FreeBSD)
 else
     CXX ?= g++
     EXTRA_FLAGS :=
-    LUA_PKG := lua5.4
+    LUA_PKG := lua
     # Standard Linux pkg-config paths
     PKG_CONFIG_PATH := /usr/lib/pkgconfig:/usr/share/pkgconfig
 endif
