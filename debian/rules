@@ -11,9 +11,15 @@ build:
 install: build
 	make install PREFIX=$(PREFIX) DESTDIR=$(CURDIR)/debian/orbit-status
 
+# Substitute the host architecture for the binary stanza's `any` so the
+# resulting .deb is installable (dpkg rejects `Architecture: any` on binaries).
+ARCH := $(shell dpkg-architecture -qDEB_HOST_ARCH)
+
 binary-arch: install
 	mkdir -p $(CURDIR)/debian/orbit-status/DEBIAN
-	awk '/^Package:/ {p=1} p' debian/control > $(CURDIR)/debian/orbit-status/DEBIAN/control
+	awk '/^Package:/ {p=1} p' debian/control \
+	    | sed 's/^Architecture: any$$/Architecture: $(ARCH)/' \
+	    > $(CURDIR)/debian/orbit-status/DEBIAN/control
 	sed -n 's/.*(\(.*\)).*/\1/p' debian/changelog | head -1 | \
 	    xargs -I{} echo "Version: {}" >> $(CURDIR)/debian/orbit-status/DEBIAN/control
 	dpkg-deb --root-owner-group --build $(CURDIR)/debian/orbit-status $(CURDIR)/..

@@ -1,7 +1,7 @@
 Source: orbit-status
 Section: x11
 Priority: optional
-Maintainer: steven66619 <ste@example.com>
+Maintainer: Steven Atkinson <steven4x4@gmail.com>
 Build-Depends: debhelper-compat (= 13), pkg-config, libwayland-dev,
  libcairo2-dev, libpango1.0-dev, wayland-protocols, liblua5.4-dev
 Standards-Version: 4.6.2
@@ -9,7 +9,7 @@ Homepage: https://github.com/steven66619/orbit-status-new
 
 Package: orbit-status
 Architecture: any
-Maintainer: steven66619 <ste@example.com>
+Maintainer: Steven Atkinson <steven4x4@gmail.com>
 Section: x11
 Priority: optional
 Homepage: https://github.com/steven66619/orbit-status-new
