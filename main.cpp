@@ -19,6 +19,7 @@
 #include "bar.hpp"
 #include "config.hpp"
 #include "sway_ipc.hpp"
+#include "sni_tray.hpp"
 
 struct WlBuffer {
     wl_buffer *buffer = nullptr;
@@ -47,6 +48,7 @@ struct OrbitStatus {
     Bar *bar = nullptr;
     Config *cfg = nullptr;
 
+    SniTray tray;
     int timer_fd = -1;
     int inotify_fd = -1;
 
@@ -99,6 +101,13 @@ static const char *config_path() {
 static void render(OrbitStatus *ws);
 static void popup_destroy(OrbitStatus *ws);
 static void tooltip_destroy(OrbitStatus *ws);
+
+static void on_tray_change(void *userdata) {
+    OrbitStatus *ws = (OrbitStatus *)userdata;
+    if (ws->bar) {
+        render(ws);
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /* Shared memory buffers                                              */
@@ -566,6 +575,7 @@ static void pointer_enter(void *data, wl_pointer *pointer,
         return;
 
     bar_update_hover(ws->bar, ws->pointer_x, ws->pointer_y);
+    sni_tray_update_hover(&ws->tray, ws->pointer_x, ws->pointer_y);
     render(ws);
 
     for (int i = 0; i < ws->bar->n_clickables; i++) {
@@ -639,8 +649,11 @@ static void pointer_motion(void *data, wl_pointer *pointer,
 
     int old_power = ws->bar->power_hovered;
     int old_ws = ws->bar->hovered_workspace;
+    bool tray_hover_changed = false;
+    if (ws->tray.conn)
+        tray_hover_changed = sni_tray_update_hover(&ws->tray, x, y);
     bar_update_hover(ws->bar, x, y);
-    if (old_power != ws->bar->power_hovered || old_ws != ws->bar->hovered_workspace)
+    if (old_power != ws->bar->power_hovered || old_ws != ws->bar->hovered_workspace || tray_hover_changed)
         render(ws);
 
     int found_tooltip = -1;
@@ -683,9 +696,15 @@ static void pointer_button(void *data, wl_pointer *pointer,
     uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
     OrbitStatus *ws = (OrbitStatus *)data;
     if (state != WL_POINTER_BUTTON_STATE_PRESSED) return;
-    if (button != 0x110) return; /* BTN_LEFT */
 
     int x = ws->pointer_x, y = ws->pointer_y;
+
+    // Tray handles left / middle / right clicks on its icons.
+    if (ws->tray.conn && sni_tray_handle_click(&ws->tray, x, y, button))
+        return;
+
+    /* All remaining clicks are left button only. */
+    if (button != 0x110) return; /* BTN_LEFT */
 
     if (ws->popup.visible) {
         if (ws->current_pointer_surface == ws->popup.surface) {
@@ -831,9 +850,12 @@ static void layer_surface_configure(void *data,
         ws->height = height;
         if (ws->bar) bar_destroy(ws->bar);
         ws->bar = bar_create(ws->width, ws->height, ws->cfg, "swaymsg workspace number %d");
+        ws->bar->tray = &ws->tray;
     }
-    if (!ws->bar)
+    if (!ws->bar) {
         ws->bar = bar_create(ws->width, ws->height, ws->cfg, "swaymsg workspace number %d");
+        ws->bar->tray = &ws->tray;
+    }
 
     zwlr_layer_surface_v1_ack_configure(surface, serial);
     ws->configured = true;
@@ -968,6 +990,17 @@ static void reload(OrbitStatus *ws) {
     config_destroy(ws->cfg);
     ws->cfg = config_load(config_path());
     ws->bar = bar_create(ws->width, ws->height, ws->cfg, "swaymsg workspace number %d");
+    ws->bar->tray = &ws->tray;
+
+    // Refresh tray icon size / enabled state from the new config.
+    if (config_get_int(ws->cfg, "show_tray", 1)) {
+        ws->tray.icon_size = config_get_int(ws->cfg, "tray_icon_size", 24);
+        // The initial tray may be uninitialized if show_tray was 0 at launch.
+        if (!ws->tray.conn) {
+            if (sni_tray_init(&ws->tray, ws->tray.icon_size, on_tray_change, ws) < 0)
+                fprintf(stderr, "orbit-status: tray disabled (DBus unavailable)\n");
+        }
+    }
     setup_plugin_watches(ws);
     sway_ipc_update_workspaces(ws->bar);
     if (config_get_int(ws->cfg, "show_active_window", 1))
@@ -997,6 +1030,13 @@ int main() {
     ws.width = 1920;
     ws.height = bh;
     ws.running = true;
+
+    // Initialize the StatusNotifier tray (DBus).
+    if (config_get_int(ws.cfg, "show_tray", 1)) {
+        int tray_icon_size = config_get_int(ws.cfg, "tray_icon_size", 24);
+        if (sni_tray_init(&ws.tray, tray_icon_size, on_tray_change, &ws) < 0)
+            fprintf(stderr, "orbit-status: tray disabled (DBus unavailable)\n");
+    }
 
     ws.display = wl_display_connect(nullptr);
     if (!ws.display) {
@@ -1046,14 +1086,17 @@ int main() {
     }
 
     while (ws.running) {
-        struct pollfd fds[3] = {
+        int tray_fd = ws.tray.conn ? sni_tray_get_fd(&ws.tray) : -1;
+        struct pollfd fds[4] = {
             {.fd = wl_display_get_fd(ws.display), .events = POLLIN},
             {.fd = ws.timer_fd, .events = POLLIN},
             {.fd = ws.inotify_fd, .events = POLLIN},
+            {.fd = tray_fd, .events = POLLIN},
         };
         int nfds = 1;
         if (ws.timer_fd >= 0) nfds = 2;
         if (ws.inotify_fd >= 0) nfds = 3;
+        if (tray_fd >= 0) nfds = 4;
         bool has_display_data = false;
 
         while (wl_display_prepare_read(ws.display) != 0)
@@ -1106,6 +1149,10 @@ int main() {
             }
         }
 
+        if (tray_fd >= 0 && (fds[3].revents & POLLIN)) {
+            sni_tray_dispatch(&ws.tray);
+        }
+
 check_reload:
         if (reload_requested) {
             reload_requested = 0;
@@ -1115,6 +1162,7 @@ check_reload:
 
     if (ws.timer_fd >= 0) close(ws.timer_fd);
     if (ws.inotify_fd >= 0) close(ws.inotify_fd);
+    if (ws.tray.conn) sni_tray_destroy(&ws.tray);
     if (ws.popup.visible) popup_destroy(&ws);
     if (ws.tooltip.visible) tooltip_destroy(&ws);
     destroy_all_buffers(&ws);

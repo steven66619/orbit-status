@@ -12,6 +12,10 @@
 # bar_bg_color              # optional; if unset uses dark gradient
 # accent_color = 0.0 0.90 1.0 1.0
 
+# === Status Notifier Tray ===
+# show_tray = 1               # 1 to enable the system tray (DBus StatusNotifierItem)
+# tray_icon_size = 24         # size of tray icons in pixels
+#
 # === Power Buttons ===
 # show_power = 1
 # icon_size = 24

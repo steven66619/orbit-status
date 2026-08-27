@@ -39,13 +39,13 @@ XDGCOD := build/$(XDG)-client.c
 
 # Build flags
 CXXFLAGS := $(CXXFLAGS) $(STD) $(WARN) $(EXTRA_FLAGS) -Ibuild \
-    $(shell pkg-config --cflags wayland-client cairo pangocairo $(LUA_PKG))
+    $(shell pkg-config --cflags wayland-client cairo pangocairo librsvg-2.0 dbus-1 $(LUA_PKG))
 
 LDLIBS := $(EXTRA_FLAGS) \
-    $(shell pkg-config --libs wayland-client cairo pangocairo $(LUA_PKG)) \
+    $(shell pkg-config --libs wayland-client cairo pangocairo librsvg-2.0 dbus-1 $(LUA_PKG)) \
     -lm
 
-OBJS := build/main.o build/bar.o build/lua_plugin.o build/sway_ipc.o \
+OBJS := build/main.o build/bar.o build/lua_plugin.o build/sway_ipc.o build/sni_tray.o \
     build/$(WLROOT)-client.o build/$(XDG)-client.o
 
 orbit-status: $(OBJS)

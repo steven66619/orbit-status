@@ -360,9 +360,15 @@ void bar_render(Bar *bar, cairo_t *cr) {
 
     int pw_btn_size = 24;
     int pw_total_w = pw_btn_size * 3 + 6 * 2;
+
+    // Reserve space for the tray between the center content and power buttons.
+    int tray_w = bar->tray ? sni_tray_width(bar->tray) : 0;
+    int tray_gap = (tray_w > 0) ? 8 : 0;
+    bar->tray_width = tray_w + tray_gap;
+
     int pw_start = config_get_int(bar->cfg, "show_power", 1)
-        ? bar->width - BAR_PADDING - pw_total_w
-        : bar->width;
+        ? bar->width - BAR_PADDING - pw_total_w - bar->tray_width
+        : bar->width - bar->tray_width;
 
     int cx = ws_end + 10;
     int cx_end = pw_start - 10;
@@ -594,6 +600,10 @@ void bar_render(Bar *bar, cairo_t *cr) {
 
         if (l) { g_object_unref(l); }
     }
+
+    // Draw the tray right-aligned, just left of the power buttons.
+    if (bar->tray && bar->tray->n_items > 0)
+        sni_tray_render(bar->tray, cr, bar->height, pw_start);
 }
 
 ClickAction bar_handle_click(Bar *bar, int x, int y) {
