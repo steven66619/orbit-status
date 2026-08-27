@@ -62,11 +62,8 @@ struct Bar {
     char active_window_class[64];
     char active_window_title[192];
 
-    int tray_width;
-
     Bar() : width(0), height(0), cfg(nullptr), n_clickables(0), n_icons(0),
-            power_hovered(-1), hovered_workspace(-1), n_workspaces(0), n_lua_plugins(0),
-            tray_width(0) {
+            power_hovered(-1), hovered_workspace(-1), n_workspaces(0), n_lua_plugins(0) {
         for (int i = 0; i < 8; i++) icons[i] = nullptr;
         workspace_switch_cmd[0] = '\0';
         active_window_class[0] = '\0';

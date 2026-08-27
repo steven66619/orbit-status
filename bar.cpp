@@ -146,11 +146,11 @@ static void draw_power_buttons(Bar *bar, cairo_t *cr, int h) {
     int btn_size = config_get_int(cfg, "icon_size", 24);
     int btn_y = (h - btn_size) / 2;
     int gap = 6;
-    int x = bar->width - pad - bar->tray_width;
+    int x = bar->width - pad;
 
     int group_w = btn_size * 3 + gap * 2;
     int bg_pad = 3;
-    int bg_x = bar->width - pad - group_w - bg_pad - bar->tray_width;
+    int bg_x = bar->width - pad - group_w - bg_pad;
     int bg_y = btn_y - bg_pad;
     int bg_w = group_w + bg_pad * 2;
     int bg_h = btn_size + bg_pad * 2;
@@ -359,7 +359,7 @@ void bar_render(Bar *bar, cairo_t *cr) {
         draw_power_buttons(bar, cr, bar->height);
 
     int pw_btn_size = 24;
-    int pw_total_w = pw_btn_size * 3 + 6 * 2 + bar->tray_width;
+    int pw_total_w = pw_btn_size * 3 + 6 * 2;
     int pw_start = config_get_int(bar->cfg, "show_power", 1)
         ? bar->width - BAR_PADDING - pw_total_w
         : bar->width;
