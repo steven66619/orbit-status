@@ -247,15 +247,12 @@ static void emit_properties_changed(SniTray *tray) {
     DBusMessage *sig = dbus_message_new_signal(SNI_WATCHER_PATH,
         PROPS_IFACE, "PropertiesChanged");
     if (!sig) return;
-    const char *iface = SNI_WATCHER_IFACE;
-    dbus_message_append_args(sig,
-        DBUS_TYPE_STRING, &iface,
-        DBUS_TYPE_INVALID);
-    // Append empty dict and empty array for the remaining signature.
+    // Signature: sa{sv}as  (interface, changed-properties dict, invalidated array)
     DBusMessageIter it, sub;
     dbus_message_iter_init_append(sig, &it);
-    dbus_message_iter_open_container(&it, DBUS_TYPE_ARRAY,
-        "{sv}", &sub);
+    const char *iface = SNI_WATCHER_IFACE;
+    dbus_message_iter_append_basic(&it, DBUS_TYPE_STRING, &iface);
+    dbus_message_iter_open_container(&it, DBUS_TYPE_ARRAY, "{sv}", &sub);
     dbus_message_iter_close_container(&it, &sub);
     dbus_message_iter_open_container(&it, DBUS_TYPE_ARRAY, "s", &sub);
     dbus_message_iter_close_container(&it, &sub);
@@ -477,13 +474,35 @@ static void handle_get(SniTray *tray, DBusMessage *msg, DBusMessage *reply) {
 
     DBusMessageIter r, v;
     dbus_message_iter_init_append(reply, &r);
-    dbus_message_iter_open_container(&r, DBUS_TYPE_VARIANT, nullptr, &v);
+
+    // The VARIANT container's signature depends on the property type.
+    const char *var_sig = nullptr;
+    if (strcmp(prop, "RegisteredStatusNotifierItems") == 0)
+        var_sig = "as";
+    else if (strcmp(prop, "IsStatusNotifierHostRegistered") == 0)
+        var_sig = "b";
+    else if (strcmp(prop, "ProtocolVersion") == 0)
+        var_sig = "i";
+    if (!var_sig) {
+        // Unknown property: return an empty variant.
+        var_sig = "s";
+        dbus_message_iter_open_container(&r, DBUS_TYPE_VARIANT, var_sig, &v);
+        const char *empty = "";
+        dbus_message_iter_append_basic(&v, DBUS_TYPE_STRING, &empty);
+        dbus_message_iter_close_container(&r, &v);
+        return;
+    }
+    dbus_message_iter_open_container(&r, DBUS_TYPE_VARIANT, var_sig, &v);
 
     if (strcmp(prop, "RegisteredStatusNotifierItems") == 0) {
+        // The variant's content is an array of strings; open the array first.
+        DBusMessageIter arr;
+        dbus_message_iter_open_container(&v, DBUS_TYPE_ARRAY, "s", &arr);
         for (int i = 0; i < tray->n_items; i++) {
             const char *s = tray->items[i].service;
-            dbus_message_iter_append_basic(&v, DBUS_TYPE_STRING, &s);
+            dbus_message_iter_append_basic(&arr, DBUS_TYPE_STRING, &s);
         }
+        dbus_message_iter_close_container(&v, &arr);
     } else if (strcmp(prop, "IsStatusNotifierHostRegistered") == 0) {
         dbus_bool_t b = tray->host_registered;
         dbus_message_iter_append_basic(&v, DBUS_TYPE_BOOLEAN, &b);
@@ -505,10 +524,13 @@ static void handle_get_all(SniTray *tray, DBusMessage *msg, DBusMessage *reply) 
         const char *k = "RegisteredStatusNotifierItems";
         dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &k);
         dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "as", &v);
+        DBusMessageIter arr;
+        dbus_message_iter_open_container(&v, DBUS_TYPE_ARRAY, "s", &arr);
         for (int i = 0; i < tray->n_items; i++) {
             const char *s = tray->items[i].service;
-            dbus_message_iter_append_basic(&v, DBUS_TYPE_STRING, &s);
+            dbus_message_iter_append_basic(&arr, DBUS_TYPE_STRING, &s);
         }
+        dbus_message_iter_close_container(&v, &arr);
         dbus_message_iter_close_container(&entry, &v);
         dbus_message_iter_close_container(&dict, &entry);
     }
