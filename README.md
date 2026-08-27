@@ -7,26 +7,26 @@ Inspired by the clean, responsive aesthetic of the **Distro Tube Operating Syste
 ## Key Features
 
 * **Zero-Fork Statistics Engine**: Parses `/proc/stat` and `/proc/meminfo` continuously using static `std::ifstream` data streams. It never calls external system applications or subshells, guaranteeing near-zero CPU cycles are wasted on updating the bar itself.
-* **Dual-Protocol Compositor Architecture**: Employs compile-time conditional C++ preprocessing flags to seamlessly swap backend layers. It natively drives Wayland events (via Hyprland UNIX domain socket bindings) or legacy Xorg events (via X11 property notify root window atom listeners for XMonad).
+* **Native Wayland Architecture**: Renders via the `wlr-layer-shell` protocol (Sway, Hyprland, river, Wayfire, and other wlroots-based compositors) with double-buffered shared-memory surfaces. Workspace state and the focused window are read directly from the compositor over the Sway/i3 IPC UNIX domain socket — no X11, no XWayland, no external bar daemons.
 * **Isolated Lua Sandboxing**: Loads every discrete status pill into its own independent, sandboxed Lua engine state. Plugins execute safely in separate frames without risking memory access collisions or UI lock-ups.
 * **Systemd-Independent Compatibility**: Retains absolute portability. Because data tracking bypasses systemd APIs entirely, `orbit-status` runs out of the box on alternative init systems including **OpenRC**, **runit**, and **s6**, making it a perfect fit for distributions like Void Linux, Artix, or Alpine.
 
 ## Architectural Layout
 
 ```text
-                   ┌──► Wayland Target ──► Reads Hyprland Unix Socket (.socket2.sock)
-                   │
+                    ┌──► wlr-layer-shell surface (bar, popup, tooltip)
+                    │
 [orbit-status C++ Core]┤
-                   │
-                   └──► Xorg Target ─────► Listens to X11 Root Window (_XMONAD_LOG)
-                           │
-                           └─► Loads Isolated Lua States ─► [cpu.lua] [mem.lua]
+                    │
+                    └──► Sway/i3 IPC socket ($SWAYSOCK) ──► workspaces + focused window
+                            │
+                            └─► Loads Isolated Lua States ─► [cpu.lua] [mem.lua]
 ```
 
 ## How It Works (Developer Documentation)
 
 ### 1. C++ Master Loop & Environment Isolation
-The central execution hub in `main.cpp` checks for preprocessor directives passed during compilation. Rather than utilizing expensive background loops, the Xorg target sleeps efficiently until the Xserver broadcasts a `PropertyNotify` event, indicating that your window manager shifted workspaces or changed active window titles.
+The central execution hub in `main.cpp` drives a `poll()` loop over the Wayland display, a 1-second `timerfd` tick, an inotify watch on the config directory, and a SIGHUP reload handler. On each tick it queries the compositor over the Sway/i3 IPC socket (`$SWAYSOCK` or `$I3SOCK`) for the workspace list and focused window, then re-renders the bar into a double-buffered `wl_shm` surface. Clicking a workspace pill runs `workspace_switch_cmd` (default `swaymsg workspace number %d`).
 
 ### 2. Lua Plugin Interface (`.lua`)
 Every configuration module placed inside your user configuration directory must implement a core execution function. By utilizing persistent scoped states, the C++ engine feeds information to Lua seamlessly:

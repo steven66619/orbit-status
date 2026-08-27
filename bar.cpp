@@ -5,7 +5,6 @@
 #include <ctime>
 #include <cmath>
 #include <unistd.h>
-#include <X11/Xatom.h>
 #include <pango/pangocairo.h>
 
 #ifndef M_PI
@@ -15,11 +14,14 @@
 #define M_PI_2 (M_PI / 2.0)
 #endif
 
-Bar *bar_create(int width, int height, Config *cfg) {
+Bar *bar_create(int width, int height, Config *cfg, const char *ws_cmd_default) {
     Bar *bar = new Bar();
     bar->width = width;
     bar->height = height;
     bar->cfg = cfg;
+
+    const char *wsc = config_get(cfg, "workspace_switch_cmd", ws_cmd_default);
+    snprintf(bar->workspace_switch_cmd, sizeof(bar->workspace_switch_cmd), "%s", wsc);
 
     for (int i = 0; i < MAX_LUA_PLUGINS; i++) {
         char cmdkey[32], pathkey[32], ikey[32];
@@ -330,10 +332,12 @@ int draw_workspaces(Bar *bar, cairo_t *cr, int h, int x) {
             cl->y = y;
             cl->w = btn_w;
             cl->h = btn_h;
-            cl->action = CLICK_HYPRCTL;
+            cl->action = CLICK_WORKSPACE;
             cl->lua_plugin_idx = -1;
+            /* %d is the 1-based workspace id; backends provide a command
+               that maps it to their own numbering (e.g. wmctrl needs -1). */
             snprintf(cl->command, sizeof(cl->command),
-                "wmctrl -s %d", id - 1);
+                bar->workspace_switch_cmd, id);
         }
 
         x += btn_w + 6;
@@ -610,7 +614,7 @@ void bar_update_hover(Bar *bar, int x, int y) {
         Clickable *c = &bar->clickables[i];
         if (x >= c->x && x < c->x + c->w &&
             y >= c->y && y < c->y + c->h) {
-            if (c->action == CLICK_HYPRCTL)
+            if (c->action == CLICK_WORKSPACE)
                 bar->hovered_workspace = i;
             else if (c->action == CLICK_POWEROFF)
                 bar->power_hovered = 0;
@@ -683,65 +687,13 @@ void bar_update_workspace_names(Bar *bar, TrackedWindow *windows, int n_windows)
     }
 }
 
-static Atom ewmh_atom(Display *dpy, const char *name) {
-    return XInternAtom(dpy, name, False);
-}
-
-static unsigned long ewmh_get_cardinal(Display *dpy, Window win, Atom prop) {
-    Atom actual_type;
-    int actual_fmt;
-    unsigned long n, bytes;
-    unsigned char *data = nullptr;
-    unsigned long val = 0;
-    if (XGetWindowProperty(dpy, win, prop, 0, 1, False, XA_CARDINAL,
-                           &actual_type, &actual_fmt, &n, &bytes, &data) == Success && data) {
-        if (actual_type == XA_CARDINAL && actual_fmt == 32 && n > 0)
-            val = *(uint32_t *)data;
-        XFree(data);
-    }
-    return val;
-}
-
-void bar_update_workspaces(Bar *bar, Display *dpy) {
-    bar->n_workspaces = 0;
-    Window root = RootWindow(dpy, DefaultScreen(dpy));
-
-    Atom net_number_of_desktops = ewmh_atom(dpy, "_NET_NUMBER_OF_DESKTOPS");
-    Atom net_current_desktop = ewmh_atom(dpy, "_NET_CURRENT_DESKTOP");
-    Atom net_desktop_names = ewmh_atom(dpy, "_NET_DESKTOP_NAMES");
-
-    unsigned long ndesks = ewmh_get_cardinal(dpy, root, net_number_of_desktops);
-    if (ndesks == 0 || ndesks > MAX_WORKSPACES) ndesks = MAX_WORKSPACES;
-    unsigned long current = ewmh_get_cardinal(dpy, root, net_current_desktop);
-
-    for (unsigned long i = 0; i < ndesks; i++) {
-        bar->workspaces[i].id = i + 1;
-        bar->workspaces[i].active = (i == current);
-        bar->workspaces[i].name[0] = '\0';
-    }
-    bar->n_workspaces = ndesks;
-
-    Atom actual_type;
-    int actual_fmt;
-    unsigned long n, bytes;
-    unsigned char *data = nullptr;
-    if (XGetWindowProperty(dpy, root, net_desktop_names, 0, 256, False,
-                           AnyPropertyType, &actual_type, &actual_fmt,
-                           &n, &bytes, &data) == Success && data) {
-        char *p = (char *)data;
-        unsigned long len = actual_fmt == 8 ? n : n * 4;
-        for (unsigned long i = 0; i < ndesks && len > 0; i++) {
-            size_t slen = strnlen(p, len);
-            if (slen > 0) {
-                snprintf(bar->workspaces[i].name, sizeof(bar->workspaces[i].name), "%s", p);
-            }
-            if (slen >= len) break;
-            p += slen + 1;
-            len -= slen + 1;
-        }
-        XFree(data);
-    }
-
+void bar_set_workspaces(Bar *bar, const Workspace *workspaces, int n) {
+    if (!bar) return;
+    if (n > MAX_WORKSPACES) n = MAX_WORKSPACES;
+    if (n < 0) n = 0;
+    bar->n_workspaces = n;
+    for (int i = 0; i < n; i++)
+        bar->workspaces[i] = workspaces[i];
 }
 
 void bar_set_active_window(Bar *bar, const char *cls, const char *title) {

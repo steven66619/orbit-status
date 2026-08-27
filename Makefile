@@ -24,22 +24,68 @@ endif
 # Export for the shell commands below
 export PKG_CONFIG_PATH
 
+# --- Wayland protocol codegen ---
+WAYLAND_SCANNER := $(shell pkg-config --variable=wayland_scanner wayland-scanner 2>/dev/null || echo wayland-scanner)
+PROTOCOLS_DIR := /usr/share/wayland-protocols
+
+WLROOT := wlr-layer-shell-unstable-v1
+WLHEADER := build/$(WLROOT)-client.h
+WLCODE := build/$(WLROOT)-client.c
+
+XDG   := xdg-shell
+XDGXML := $(PROTOCOLS_DIR)/stable/xdg-shell/xdg-shell.xml
+XDGHDR := build/$(XDG)-client.h
+XDGCOD := build/$(XDG)-client.c
+
 # Build flags
-CXXFLAGS := $(CXXFLAGS) $(STD) $(WARN) $(EXTRA_FLAGS) \
-    $(shell pkg-config --cflags x11 cairo pangocairo $(LUA_PKG))
+CXXFLAGS := $(CXXFLAGS) $(STD) $(WARN) $(EXTRA_FLAGS) -Ibuild \
+    $(shell pkg-config --cflags wayland-client cairo pangocairo $(LUA_PKG))
 
 LDLIBS := $(EXTRA_FLAGS) \
-    $(shell pkg-config --libs x11 cairo pangocairo $(LUA_PKG)) \
-    -lm -lXext -lXcomposite
+    $(shell pkg-config --libs wayland-client cairo pangocairo $(LUA_PKG)) \
+    -lm
 
-OBJS := build/main.o build/bar.o build/lua_plugin.o
+OBJS := build/main.o build/bar.o build/lua_plugin.o build/sway_ipc.o \
+    build/$(WLROOT)-client.o build/$(XDG)-client.o
+
+orbit-status: $(OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDLIBS)
 
 build/%.o: %.cpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-orbit-status: $(OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDLIBS)
+build/main.o: main.cpp $(WLHEADER) $(XDGHDR)
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+build/%.o: %.c
+	@mkdir -p build
+	$(CC) -c -o $@ $<
+
+build/$(WLROOT)-client.o: $(WLCODE) $(WLHEADER)
+	@mkdir -p build
+	$(CC) -c -o $@ $<
+
+build/$(XDG)-client.o: $(XDGCOD) $(XDGHDR)
+	@mkdir -p build
+	$(CC) -c -o $@ $<
+
+$(WLHEADER): $(WLROOT).xml
+	@mkdir -p build
+	$(WAYLAND_SCANNER) client-header < $< | sed 's/namespace/wl_namespace/g' > $@
+
+$(WLCODE): $(WLROOT).xml
+	@mkdir -p build
+	$(WAYLAND_SCANNER) private-code < $< > $@
+
+$(XDGHDR): $(XDGXML)
+	@mkdir -p build
+	$(WAYLAND_SCANNER) client-header < $< > $@
+
+$(XDGCOD): $(XDGXML)
+	@mkdir -p build
+	$(WAYLAND_SCANNER) private-code < $< > $@
 
 clean:
 	rm -rf orbit-status build

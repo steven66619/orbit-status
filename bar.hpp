@@ -3,7 +3,6 @@
 
 #include <ctime>
 #include <cairo.h>
-#include <X11/Xlib.h>
 #include "config.hpp"
 #include "lua_plugin.hpp"
 
@@ -18,7 +17,7 @@ enum ClickAction {
     CLICK_POWEROFF,
     CLICK_REBOOT,
     CLICK_SUSPEND,
-    CLICK_HYPRCTL,
+    CLICK_WORKSPACE,
     CLICK_RUN,
 };
 
@@ -52,6 +51,7 @@ struct Bar {
     int n_icons;
     int power_hovered;
     int hovered_workspace;
+    char workspace_switch_cmd[128];
 
     Workspace workspaces[MAX_WORKSPACES];
     int n_workspaces;
@@ -68,6 +68,7 @@ struct Bar {
             power_hovered(-1), hovered_workspace(-1), n_workspaces(0), n_lua_plugins(0),
             tray_width(0) {
         for (int i = 0; i < 8; i++) icons[i] = nullptr;
+        workspace_switch_cmd[0] = '\0';
         active_window_class[0] = '\0';
         active_window_title[0] = '\0';
         for (int i = 0; i < MAX_WORKSPACES; i++)
@@ -75,7 +76,7 @@ struct Bar {
     }
 };
 
-Bar *bar_create(int width, int height, Config *cfg);
+Bar *bar_create(int width, int height, Config *cfg, const char *ws_cmd_default);
 void bar_destroy(Bar *bar);
 void bar_render(Bar *bar, cairo_t *cr);
 ClickAction bar_handle_click(Bar *bar, int x, int y);
@@ -84,7 +85,7 @@ void bar_clear_hover(Bar *bar);
 void bar_load_png_icon(Bar *bar, const char *path, int index);
 void draw_rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r);
 int draw_workspaces(Bar *bar, cairo_t *cr, int h, int x);
-void bar_update_workspaces(Bar *bar, Display *dpy);
+void bar_set_workspaces(Bar *bar, const Workspace *workspaces, int n);
 void bar_update_lua_plugins(Bar *bar);
 void bar_update_workspace_names(Bar *bar, TrackedWindow *windows, int n_windows);
 const char *prettify_class(const char *cls);
