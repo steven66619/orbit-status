@@ -1008,6 +1008,18 @@ bool sni_tray_handle_click(SniTray *tray, int x, int y, int button) {
     return false;
 }
 
+int sni_tray_item_at(SniTray *tray, int x, int y) {
+    if (!tray) return -1;
+    int n = tray_item_count(tray);
+    for (int i = 0; i < n; i++) {
+        SniItem *item = &tray->items[i];
+        if (x >= item->x && x < item->x + item->w &&
+            y >= item->y && y < item->y + item->h)
+            return i;
+    }
+    return -1;
+}
+
 bool sni_tray_handle_scroll(SniTray *tray, int x, int y, int delta) {
     if (!tray) return false;
     int n = tray_item_count(tray);

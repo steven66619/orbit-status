@@ -21,6 +21,10 @@
 #include "sway_ipc.hpp"
 #include "sni_tray.hpp"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 struct WlBuffer {
     wl_buffer *buffer = nullptr;
     cairo_surface_t *surface = nullptr;
@@ -82,6 +86,22 @@ struct OrbitStatus {
         int confirm_btn_x = 0, confirm_btn_y = 0, confirm_btn_w = 0, confirm_btn_h = 0;
         int cancel_btn_x = 0, cancel_btn_y = 0, cancel_btn_w = 0, cancel_btn_h = 0;
     } popup;
+
+    struct {
+        wl_surface *surface = nullptr;
+        zwlr_layer_surface_v1 *layer_surface = nullptr;
+        wl_buffer *buffer = nullptr;
+        cairo_surface_t *cairo_surface = nullptr;
+        cairo_t *cr = nullptr;
+        void *shm_data = nullptr;
+        int width = 0, height = 0;
+        bool visible = false, configured = false;
+        int volume = 0;          // 0..100
+        bool dragging = false;   // handle being dragged
+        // Slider geometry (set during render).
+        int track_x = 0, track_y = 0, track_w = 0, track_h = 0;
+        int handle_x = 0, handle_y = 0, handle_w = 0, handle_h = 0;
+    } volume;
 };
 
 static volatile sig_atomic_t reload_requested;
@@ -108,6 +128,7 @@ static const char *config_path() {
 static void render(OrbitStatus *ws);
 static void popup_destroy(OrbitStatus *ws);
 static void tooltip_destroy(OrbitStatus *ws);
+static void volume_slider_destroy(OrbitStatus *ws);
 
 static void on_tray_change(void *userdata) {
     OrbitStatus *ws = (OrbitStatus *)userdata;
@@ -415,6 +436,288 @@ static void popup_create(OrbitStatus *ws, int action) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Volume slider                                                      */
+/* ------------------------------------------------------------------ */
+
+// Read the current volume (0..100) from pactl.
+static int volume_read_current(void) {
+    FILE *fp = popen("pactl get-sink-volume @DEFAULT_SINK@", "r");
+    if (!fp) return 0;
+    char buf[256] = {0};
+    if (fgets(buf, sizeof(buf), fp) == nullptr) { pclose(fp); return 0; }
+    pclose(fp);
+    const char *pct = strstr(buf, "/");
+    if (!pct) return 0;
+    pct++;
+    while (*pct == ' ') pct++;
+    int v = atoi(pct);
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+    return v;
+}
+
+static void volume_set(int v) {
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "pactl set-sink-volume @DEFAULT_SINK@ %d%%", v);
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl("/bin/sh", "sh", "-c", cmd, (char *)nullptr);
+        _exit(127);
+    }
+}
+
+static int volume_slider_create_buffer(OrbitStatus *ws) {
+    if (ws->volume.buffer) return 0;
+    int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->volume.width);
+    size_t size = (size_t)stride * ws->volume.height;
+    int fd = create_shm_fd(size);
+    if (fd < 0) return -1;
+
+    wl_shm_pool *pool = wl_shm_create_pool(ws->shm, fd, size);
+    ws->volume.buffer = wl_shm_pool_create_buffer(pool, 0,
+        ws->volume.width, ws->volume.height, stride, WL_SHM_FORMAT_ARGB8888);
+    wl_shm_pool_destroy(pool);
+
+    ws->volume.shm_data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (ws->volume.shm_data == MAP_FAILED) { ws->volume.shm_data = nullptr; return -1; }
+
+    ws->volume.cairo_surface = cairo_image_surface_create_for_data(
+        (unsigned char *)ws->volume.shm_data, CAIRO_FORMAT_ARGB32,
+        ws->volume.width, ws->volume.height, stride);
+    ws->volume.cr = cairo_create(ws->volume.cairo_surface);
+    return 0;
+}
+
+static void volume_slider_destroy_buffer(OrbitStatus *ws) {
+    if (ws->volume.cr) cairo_destroy(ws->volume.cr);
+    ws->volume.cr = nullptr;
+    if (ws->volume.cairo_surface) cairo_surface_destroy(ws->volume.cairo_surface);
+    ws->volume.cairo_surface = nullptr;
+    if (ws->volume.shm_data) {
+        int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->volume.width);
+        munmap(ws->volume.shm_data, (size_t)stride * ws->volume.height);
+    }
+    ws->volume.shm_data = nullptr;
+    if (ws->volume.buffer) wl_buffer_destroy(ws->volume.buffer);
+    ws->volume.buffer = nullptr;
+}
+
+static void volume_slider_render(OrbitStatus *ws) {
+    if (!ws->volume.visible || !ws->volume.cr) return;
+    cairo_t *cr = ws->volume.cr;
+    int w = ws->volume.width, h = ws->volume.height;
+
+    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
+    draw_rounded_rect(cr, 0, 0, w, h, 8);
+    cairo_set_source_rgba(cr, 0.12, 0.12, 0.22, 0.96);
+    cairo_fill(cr);
+
+    cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.3);
+    cairo_set_line_width(cr, 1);
+    draw_rounded_rect(cr, 0, 0, w, h, 8);
+    cairo_stroke(cr);
+
+    // Volume percentage label at the top.
+    const char *ff = config_get(ws->cfg, "font_family", "Sans");
+    char vol_font[64];
+    snprintf(vol_font, sizeof(vol_font), "%s Bold 14", ff);
+    PangoLayout *lay = pango_cairo_create_layout(cr);
+    PangoFontDescription *fd = pango_font_description_from_string(vol_font);
+    pango_layout_set_font_description(lay, fd);
+    pango_font_description_free(fd);
+    char vol_text[16];
+    snprintf(vol_text, sizeof(vol_text), "%d%%", ws->volume.volume);
+    pango_layout_set_text(lay, vol_text, -1);
+    int tw, th;
+    pango_layout_get_pixel_size(lay, &tw, &th);
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    cairo_move_to(cr, (w - tw) / 2, 14);
+    pango_cairo_show_layout(cr, lay);
+    g_object_unref(lay);
+
+    // Vertical track.
+    int track_w = 8;
+    int track_x = (w - track_w) / 2;
+    int track_y = 44;
+    int track_h = h - track_y - 24;
+
+    // Track background.
+    cairo_set_source_rgba(cr, 0.25, 0.25, 0.35, 0.8);
+    draw_rounded_rect(cr, track_x, track_y, track_w, track_h, track_w / 2);
+    cairo_fill(cr);
+
+    // Filled portion (from bottom up to the volume level).
+    int fill_h = (int)((double)track_h * ws->volume.volume / 100.0);
+    int fill_y = track_y + track_h - fill_h;
+    cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.9);
+    draw_rounded_rect(cr, track_x, fill_y, track_w, fill_h, track_w / 2);
+    cairo_fill(cr);
+
+    // Handle: a circle centered on the track at the volume level.
+    int handle_r = 9;
+    int handle_cx = track_x + track_w / 2;
+    int handle_cy = track_y + track_h - fill_h;
+    cairo_set_source_rgba(cr, 1, 1, 1, 0.95);
+    cairo_arc(cr, handle_cx, handle_cy, handle_r, 0, 2 * M_PI);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 1.0);
+    cairo_arc(cr, handle_cx, handle_cy, handle_r - 3, 0, 2 * M_PI);
+    cairo_fill(cr);
+
+    // Store geometry for hit-testing.
+    ws->volume.track_x = track_x;
+    ws->volume.track_y = track_y;
+    ws->volume.track_w = track_w;
+    ws->volume.track_h = track_h;
+    ws->volume.handle_x = handle_cx - handle_r;
+    ws->volume.handle_y = handle_cy - handle_r;
+    ws->volume.handle_w = handle_r * 2;
+    ws->volume.handle_h = handle_r * 2;
+
+    cairo_surface_flush(ws->volume.cairo_surface);
+    wl_surface_attach(ws->volume.surface, ws->volume.buffer, 0, 0);
+    wl_surface_damage_buffer(ws->volume.surface, 0, 0, w, h);
+    wl_surface_commit(ws->volume.surface);
+}
+
+static void volume_slider_layer_surface_configure(void *data,
+    zwlr_layer_surface_v1 *surface, uint32_t serial,
+    uint32_t width, uint32_t height) {
+    OrbitStatus *ws = (OrbitStatus *)data;
+    zwlr_layer_surface_v1_ack_configure(surface, serial);
+    if (width > 0) ws->volume.width = width;
+    if (height > 0) ws->volume.height = height;
+    if (!ws->volume.configured) {
+        ws->volume.configured = true;
+        if (volume_slider_create_buffer(ws) == 0)
+            volume_slider_render(ws);
+    }
+}
+
+static void volume_slider_layer_surface_closed(void *data,
+    zwlr_layer_surface_v1 *surface) {
+    OrbitStatus *ws = (OrbitStatus *)data;
+    volume_slider_destroy(ws);
+}
+
+static const zwlr_layer_surface_v1_listener volume_slider_layer_surface_listener = {
+    .configure = volume_slider_layer_surface_configure,
+    .closed = volume_slider_layer_surface_closed,
+};
+
+static void volume_slider_show(OrbitStatus *ws) {
+    if (ws->volume.visible) volume_slider_destroy(ws);
+    if (ws->popup.visible) popup_destroy(ws);
+
+    ws->volume.width = 64;
+    ws->volume.height = 200;
+    ws->volume.volume = volume_read_current();
+    ws->volume.dragging = false;
+
+    ws->volume.surface = wl_compositor_create_surface(ws->compositor);
+    ws->volume.layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+        ws->layer_shell, ws->volume.surface, nullptr,
+        ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "orbit-status-volume");
+
+    zwlr_layer_surface_v1_add_listener(ws->volume.layer_surface,
+        &volume_slider_layer_surface_listener, ws);
+
+    zwlr_layer_surface_v1_set_size(ws->volume.layer_surface, ws->volume.width, ws->volume.height);
+
+    const char *anchor_str = config_get(ws->cfg, "bar_anchor", "top");
+    bool bar_on_bottom = (strcmp(anchor_str, "bottom") == 0);
+    if (bar_on_bottom) {
+        zwlr_layer_surface_v1_set_anchor(ws->volume.layer_surface,
+            ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+        zwlr_layer_surface_v1_set_margin(ws->volume.layer_surface,
+            0, BAR_PADDING, ws->height + 4, 0);
+    } else {
+        zwlr_layer_surface_v1_set_anchor(ws->volume.layer_surface,
+            ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+        zwlr_layer_surface_v1_set_margin(ws->volume.layer_surface,
+            ws->height + 4, BAR_PADDING, 0, 0);
+    }
+    zwlr_layer_surface_v1_set_exclusive_zone(ws->volume.layer_surface, 0);
+
+    ws->volume.visible = true;
+    wl_surface_commit(ws->volume.surface);
+    wl_display_roundtrip(ws->display);
+}
+
+static void volume_slider_destroy(OrbitStatus *ws) {
+    if (!ws->volume.visible) return;
+    ws->volume.visible = false;
+    ws->volume.dragging = false;
+    volume_slider_destroy_buffer(ws);
+    if (ws->volume.layer_surface) {
+        zwlr_layer_surface_v1_destroy(ws->volume.layer_surface);
+        ws->volume.layer_surface = nullptr;
+    }
+    if (ws->volume.surface) {
+        wl_surface_destroy(ws->volume.surface);
+        ws->volume.surface = nullptr;
+    }
+    ws->volume.configured = false;
+}
+
+// Update the volume from a pointer y position within the slider. Returns the
+// new volume (0..100).
+static int volume_slider_volume_from_y(OrbitStatus *ws, int y) {
+    int track_top = ws->volume.track_y;
+    int track_bottom = ws->volume.track_y + ws->volume.track_h;
+    if (y <= track_top) return 100;
+    if (y >= track_bottom) return 0;
+    // Volume increases as the handle moves up.
+    double frac = (double)(track_bottom - y) / (double)ws->volume.track_h;
+    int v = (int)(frac * 100.0 + 0.5);
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+    return v;
+}
+
+// Handle pointer motion over the slider. If dragging, update the volume.
+static void volume_slider_handle_motion(OrbitStatus *ws, int x, int y) {
+    if (!ws->volume.visible || !ws->volume.dragging) return;
+    int v = volume_slider_volume_from_y(ws, y);
+    if (v != ws->volume.volume) {
+        ws->volume.volume = v;
+        volume_set(v);
+        volume_slider_render(ws);
+    }
+}
+
+// Handle a pointer button event over the slider. Returns true if handled.
+static bool volume_slider_handle_button(OrbitStatus *ws, int x, int y,
+                                        uint32_t button, uint32_t state) {
+    if (!ws->volume.visible) return false;
+    if (button != 0x110) return true;  // only left button; consume others
+
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+        // If clicking on the handle, start dragging.
+        if (x >= ws->volume.handle_x && x < ws->volume.handle_x + ws->volume.handle_w &&
+            y >= ws->volume.handle_y && y < ws->volume.handle_y + ws->volume.handle_h) {
+            ws->volume.dragging = true;
+            return true;
+        }
+        // Otherwise, jump to the clicked position on the track.
+        int v = volume_slider_volume_from_y(ws, y);
+        ws->volume.volume = v;
+        volume_set(v);
+        volume_slider_render(ws);
+        return true;
+    } else {  // release
+        ws->volume.dragging = false;
+        return true;
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* Tooltip                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -626,6 +929,12 @@ static void pointer_leave(void *data, wl_pointer *pointer,
         return;
     }
 
+    if (ws->volume.visible && surface == ws->volume.surface) {
+        // Stop dragging but keep the slider visible.
+        ws->volume.dragging = false;
+        return;
+    }
+
     bar_clear_hover(ws->bar);
     render(ws);
     if (ws->tooltip.visible)
@@ -651,6 +960,12 @@ static void pointer_motion(void *data, wl_pointer *pointer,
             ws->popup.hovered_btn = 1;
         if (old != ws->popup.hovered_btn)
             popup_render(ws);
+        return;
+    }
+
+    // Volume slider drag.
+    if (ws->volume.visible && ws->current_pointer_surface == ws->volume.surface) {
+        volume_slider_handle_motion(ws, x, y);
         return;
     }
 
@@ -702,9 +1017,32 @@ static void pointer_motion(void *data, wl_pointer *pointer,
 static void pointer_button(void *data, wl_pointer *pointer,
     uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
     OrbitStatus *ws = (OrbitStatus *)data;
-    if (state != WL_POINTER_BUTTON_STATE_PRESSED) return;
 
     int x = ws->pointer_x, y = ws->pointer_y;
+
+    // Volume slider handles its own button press/release (for dragging).
+    if (ws->volume.visible && ws->current_pointer_surface == ws->volume.surface) {
+        if (volume_slider_handle_button(ws, x, y, button, state))
+            return;
+    }
+
+    if (state != WL_POINTER_BUTTON_STATE_PRESSED) return;
+
+    // Left-click on the volume tray item toggles the slider.
+    if (button == 0x110 && ws->tray.conn) {
+        int idx = sni_tray_item_at(&ws->tray, x, y);
+        if (idx >= 0 && strcmp(ws->tray.items[idx].id, "volume") == 0) {
+            if (ws->volume.visible)
+                volume_slider_destroy(ws);
+            else
+                volume_slider_show(ws);
+            return;
+        }
+    }
+
+    // If the volume slider is visible and the click is outside it, close it.
+    if (ws->volume.visible && ws->current_pointer_surface != ws->volume.surface)
+        volume_slider_destroy(ws);
 
     // Tray handles left / middle / right clicks on its icons.
     if (ws->tray.conn && sni_tray_handle_click(&ws->tray, x, y, button))
@@ -1014,6 +1352,7 @@ static void setup_plugin_watches(OrbitStatus *ws) {
 
 static void reload(OrbitStatus *ws) {
     if (ws->popup.visible) popup_destroy(ws);
+    if (ws->volume.visible) volume_slider_destroy(ws);
     if (ws->tooltip.visible) tooltip_destroy(ws);
     destroy_all_buffers(ws);
     if (ws->bar) bar_destroy(ws->bar);
@@ -1203,6 +1542,7 @@ check_reload:
     if (ws.tray.conn) sni_tray_destroy(&ws.tray);
     sway_ipc_disconnect();
     if (ws.popup.visible) popup_destroy(&ws);
+    if (ws.volume.visible) volume_slider_destroy(&ws);
     if (ws.tooltip.visible) tooltip_destroy(&ws);
     destroy_all_buffers(&ws);
     if (ws.pointer) wl_pointer_destroy(ws.pointer);
