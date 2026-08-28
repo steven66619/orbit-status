@@ -51,6 +51,10 @@ OBJS := build/main.o build/bar.o build/lua_plugin.o build/sway_ipc.o build/sni_t
 orbit-status: $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDLIBS)
 
+# volume-sni: standalone Wayland-native SNI volume control.
+volume-sni: build/volume-sni.o
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDLIBS)
+
 build/%.o: %.cpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
@@ -88,16 +92,18 @@ $(XDGCOD): $(XDGXML)
 	$(WAYLAND_SCANNER) private-code < $< > $@
 
 clean:
-	rm -rf orbit-status build
+	rm -rf orbit-status volume-sni build
 
-install: orbit-status
+install: orbit-status volume-sni
 	install -Dm755 orbit-status $(DESTDIR)$(PREFIX)/bin/orbit-status
+	install -Dm755 volume-sni $(DESTDIR)$(PREFIX)/bin/volume-sni
 	install -Dm755 scripts/bar-update $(DESTDIR)$(PREFIX)/bin/orbit-status-update
 	install -d $(PLUGINS_DIR)
 	install -m644 plugins/*.lua $(PLUGINS_DIR)/ 2>/dev/null || true
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/orbit-status
+	rm -f $(DESTDIR)$(PREFIX)/bin/volume-sni
 	rm -rf $(DESTDIR)$(PREFIX)/share/orbit-status/plugins
 
 .PHONY: clean install uninstall

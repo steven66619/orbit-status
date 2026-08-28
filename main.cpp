@@ -774,6 +774,11 @@ static void pointer_axis(void *data, wl_pointer *pointer,
     if (axis != WL_POINTER_AXIS_VERTICAL_SCROLL) return;
 
     int x = ws->pointer_x, y = ws->pointer_y;
+
+    // Tray handles scroll over its icons (e.g. volume control).
+    if (ws->tray.conn && sni_tray_handle_scroll(&ws->tray, x, y, wl_fixed_to_int(value)))
+        return;
+
     for (int i = 0; i < ws->bar->n_clickables; i++) {
         Clickable *c = &ws->bar->clickables[i];
         if (x >= c->x && x < c->x + c->w &&

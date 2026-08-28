@@ -80,6 +80,11 @@ bool sni_tray_update_hover(SniTray *tray, int x, int y);
 // code (0x110 = left, 0x111 = middle, 0x113 = right). Returns true if handled.
 bool sni_tray_handle_click(SniTray *tray, int x, int y, int button);
 
+// Handle a vertical scroll over the tray. delta is the scroll delta (positive
+// = up). Sends the SNI Scroll method to the hovered item. Returns true if
+// handled.
+bool sni_tray_handle_scroll(SniTray *tray, int x, int y, int delta);
+
 // Total width of the tray (sum of icons + spacing).
 int sni_tray_width(SniTray *tray);
 

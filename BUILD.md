@@ -65,5 +65,6 @@ make clean
 * **`lua_plugin.cpp`** - Type-safe C++ wrapper for initializing and executing isolated Lua plugin states.
 * **`sway_ipc.cpp`** - Minimal Sway/i3 IPC client (workspaces + focused window) with a small JSON parser.
 * **`sni_tray.cpp`** - StatusNotifierItem/StatusNotifierWatcher system tray over DBus.
+* **`volume-sni.cpp`** - Standalone Wayland-native volume control that registers as a StatusNotifierItem (left-click toggles mute, scroll changes volume via `pactl`). Built and installed alongside `orbit-status` as `volume-sni`.
 * **`config.hpp`** - Simple `key = value` config parser.
 * **`plugins/`** - Bundled `.lua` layout modules (e.g., `cpu.lua`, `mem.lua`) that feed string outputs to the bar pills.

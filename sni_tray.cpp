@@ -81,7 +81,7 @@ static bool find_icon_file(const char *name, const char *theme_path,
 
     // Common theme names to try (in priority order).
     static const char *themes[] = {
-        "Adwaita", "hicolor", "elementary", "Papirus", "breeze",
+        "Adwaita", "AdwaitaLegacy", "hicolor", "elementary", "Papirus", "breeze",
         "gnome", "ubuntu-mono-dark", "ubuntu-mono-light", nullptr
     };
 
@@ -553,9 +553,19 @@ static void handle_register_item(SniTray *tray, DBusMessage *msg) {
     dbus_message_iter_get_basic(&it, &service);
     if (!service) return;
 
+    // The sender's unique bus name (e.g. ":1.42"). Some items (notably Steam)
+    // register using the watcher's own well-known name as their service, which
+    // would make our property queries resolve back to ourselves. In those cases
+    // we must query the actual sender instead.
+    const char *sender = dbus_message_get_sender(msg);
+
     if (service[0] == '/') {
-        // Item is on the watcher's own well-known name.
-        add_item(tray, SNI_WATCHER_NAME, service);
+        // Item is on the watcher's own well-known name (object path given).
+        add_item(tray, sender ? sender : SNI_WATCHER_NAME, service);
+    } else if (strcmp(service, SNI_WATCHER_NAME) == 0) {
+        // Steam registers with the watcher's well-known name as its service.
+        // Resolve to the sender's unique name so property queries reach Steam.
+        add_item(tray, sender ? sender : SNI_WATCHER_NAME, "/StatusNotifierItem");
     } else {
         add_item(tray, service, "/StatusNotifierItem");
     }
@@ -992,6 +1002,30 @@ bool sni_tray_handle_click(SniTray *tray, int x, int y, int button) {
                 send_item_method(tray, item, "SecondaryActivate", x, y);
             else if (button == 0x113)   // right
                 send_item_method(tray, item, "ContextMenu", x, y);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool sni_tray_handle_scroll(SniTray *tray, int x, int y, int delta) {
+    if (!tray) return false;
+    int n = tray_item_count(tray);
+    for (int i = 0; i < n; i++) {
+        SniItem *item = &tray->items[i];
+        if (x >= item->x && x < item->x + item->w &&
+            y >= item->y && y < item->y + item->h) {
+            // Send the SNI Scroll method: Scroll(i delta, s orientation).
+            DBusMessage *call = dbus_message_new_method_call(item->service,
+                item->object_path, SNI_ITEM_IFACE, "Scroll");
+            if (!call) return true;
+            const char *orientation = "vertical";
+            dbus_message_append_args(call,
+                DBUS_TYPE_INT32, &delta,
+                DBUS_TYPE_STRING, &orientation,
+                DBUS_TYPE_INVALID);
+            dbus_connection_send(tray->conn, call, nullptr);
+            dbus_message_unref(call);
             return true;
         }
     }
