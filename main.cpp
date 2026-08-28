@@ -34,6 +34,26 @@ struct WlBuffer {
     bool in_use = false;
 };
 
+// A single row in the network menu popup.
+struct NetMenuEntry {
+    enum Type { HEADER, WIFI, TOGGLE, ACTION, SEPARATOR } type;
+    char label[128]{};   // display text
+    char ssid[128]{};    // for WIFI: network SSID
+    int signal = 0;      // for WIFI: signal strength 0..100
+    bool checked = false;// for TOGGLE / active WIFI
+    bool enabled = true; // for TOGGLE / ACTION: is it actionable
+    bool dim = false;    // render dimmed (info rows)
+    int action = 0;      // for ACTION: which action to run
+};
+
+// Network menu actions.
+enum {
+    NET_ACTION_EDIT_CONNECTIONS = 1,
+    NET_ACTION_CONN_INFO,
+    NET_ACTION_TOGGLE_NETWORKING,
+    NET_ACTION_TOGGLE_WIFI,
+};
+
 struct OrbitStatus {
     wl_display *display = nullptr;
     wl_compositor *compositor = nullptr;
@@ -102,6 +122,23 @@ struct OrbitStatus {
         int track_x = 0, track_y = 0, track_w = 0, track_h = 0;
         int handle_x = 0, handle_y = 0, handle_w = 0, handle_h = 0;
     } volume;
+
+    struct {
+        wl_surface *surface = nullptr;
+        zwlr_layer_surface_v1 *layer_surface = nullptr;
+        wl_buffer *buffer = nullptr;
+        cairo_surface_t *cairo_surface = nullptr;
+        cairo_t *cr = nullptr;
+        void *shm_data = nullptr;
+        int width = 0, height = 0;
+        bool visible = false, configured = false;
+        NetMenuEntry entries[64];
+        int n_entries = 0;
+        int scroll = 0;   // scroll offset in pixels
+        int hovered = -1; // hovered entry index
+        int item_h = 0;   // height of a menu row
+        int header_h = 0; // height of the header row
+    } net_menu;
 };
 
 static volatile sig_atomic_t reload_requested;
@@ -129,6 +166,8 @@ static void render(OrbitStatus *ws);
 static void popup_destroy(OrbitStatus *ws);
 static void tooltip_destroy(OrbitStatus *ws);
 static void volume_slider_destroy(OrbitStatus *ws);
+static void net_menu_destroy(OrbitStatus *ws);
+static void execute_command(const char *cmd);
 
 static void on_tray_change(void *userdata) {
     OrbitStatus *ws = (OrbitStatus *)userdata;
@@ -399,6 +438,7 @@ static const zwlr_layer_surface_v1_listener popup_layer_surface_listener = {
 
 static void popup_create(OrbitStatus *ws, int action) {
     if (ws->popup.visible) popup_destroy(ws);
+    if (ws->net_menu.visible) net_menu_destroy(ws);
 
     ws->popup.width = 175;
     ws->popup.height = 105;
@@ -614,6 +654,7 @@ static const zwlr_layer_surface_v1_listener volume_slider_layer_surface_listener
 static void volume_slider_show(OrbitStatus *ws) {
     if (ws->volume.visible) volume_slider_destroy(ws);
     if (ws->popup.visible) popup_destroy(ws);
+    if (ws->net_menu.visible) net_menu_destroy(ws);
 
     ws->volume.width = 64;
     ws->volume.height = 200;
@@ -715,6 +756,567 @@ static bool volume_slider_handle_button(OrbitStatus *ws, int x, int y,
         ws->volume.dragging = false;
         return true;
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Network menu                                                       */
+/* ------------------------------------------------------------------ */
+
+// Populate the network menu entries by querying NetworkManager via nmcli.
+// The menu is rebuilt from scratch each time it is shown so the data is
+// fresh. Returns the number of entries added.
+static int net_menu_collect(OrbitStatus *ws) {
+    ws->net_menu.n_entries = 0;
+    NetMenuEntry *e = ws->net_menu.entries;
+    auto add = [&](NetMenuEntry::Type t) -> NetMenuEntry * {
+        if (ws->net_menu.n_entries >= 64) return nullptr;
+        NetMenuEntry *en = &e[ws->net_menu.n_entries++];
+        *en = NetMenuEntry{};
+        en->type = t;
+        en->enabled = true;
+        return en;
+    };
+
+    // Header is rendered as a fixed bar; entries start below it.
+
+    // Active connection(s).
+    FILE *fp = popen("nmcli -t -f NAME,TYPE,DEVICE connection show --active", "r");
+    if (fp) {
+        char line[256];
+        bool any = false;
+        while (fgets(line, sizeof(line), fp)) {
+            // Format: NAME:TYPE:DEVICE
+            char *nl = strchr(line, '\n');
+            if (nl) *nl = '\0';
+            if (strstr(line, ":loopback:") || strstr(line, ":lo:")) continue;
+            char name[128] = {0}, type[64] = {0}, dev[64] = {0};
+            char *c1 = strchr(line, ':');
+            if (!c1) continue;
+            *c1 = '\0';
+            snprintf(name, sizeof(name), "%s", line);
+            char *c2 = strchr(c1 + 1, ':');
+            if (c2) {
+                *c2 = '\0';
+                snprintf(type, sizeof(type), "%s", c1 + 1);
+                snprintf(dev, sizeof(dev), "%s", c2 + 1);
+            } else {
+                snprintf(type, sizeof(type), "%s", c1 + 1);
+            }
+            NetMenuEntry *info = add(NetMenuEntry::HEADER);
+            if (!info) break;
+            info->dim = true;
+            snprintf(info->label, sizeof(info->label), "Connected: %s", name);
+            any = true;
+        }
+        pclose(fp);
+        (void)any;
+    }
+
+    // Wi-Fi networks section.
+    NetMenuEntry *sec = add(NetMenuEntry::HEADER);
+    if (sec) snprintf(sec->label, sizeof(sec->label), "Wi-Fi Networks");
+
+    // Collect wifi networks, dedupe by SSID keeping strongest signal.
+    struct WifiNet { char ssid[128]; int signal; bool active; };
+    WifiNet wifis[32];
+    int n_wifi = 0;
+    fp = popen("nmcli -t -f SSID,SIGNAL,ACTIVE device wifi list", "r");
+    if (fp) {
+        char line[256];
+        while (fgets(line, sizeof(line), fp) && n_wifi < 32) {
+            char *nl = strchr(line, '\n');
+            if (nl) *nl = '\0';
+            char ssid[128] = {0}, sig[16] = {0}, act[8] = {0};
+            char *c1 = strchr(line, ':');
+            if (!c1) continue;
+            *c1 = '\0';
+            snprintf(ssid, sizeof(ssid), "%s", line);
+            char *c2 = strchr(c1 + 1, ':');
+            if (c2) {
+                *c2 = '\0';
+                snprintf(sig, sizeof(sig), "%s", c1 + 1);
+                snprintf(act, sizeof(act), "%s", c2 + 1);
+            } else {
+                snprintf(sig, sizeof(sig), "%s", c1 + 1);
+            }
+            if (ssid[0] == '\0') continue;  // skip hidden/empty
+            int signal = atoi(sig);
+            bool active = (strstr(act, "yes") != nullptr);
+            // Dedupe: keep strongest, prefer active.
+            int found = -1;
+            for (int i = 0; i < n_wifi; i++) {
+                if (strcmp(wifis[i].ssid, ssid) == 0) { found = i; break; }
+            }
+            if (found >= 0) {
+                if (active) wifis[found].active = true;
+                if (signal > wifis[found].signal) wifis[found].signal = signal;
+            } else {
+                snprintf(wifis[n_wifi].ssid, sizeof(wifis[n_wifi].ssid), "%s", ssid);
+                wifis[n_wifi].signal = signal;
+                wifis[n_wifi].active = active;
+                n_wifi++;
+            }
+        }
+        pclose(fp);
+    }
+
+    // Sort by signal strength (strongest first).
+    for (int i = 0; i < n_wifi - 1; i++) {
+        for (int j = i + 1; j < n_wifi; j++) {
+            if (wifis[j].signal > wifis[i].signal) {
+                WifiNet t = wifis[i]; wifis[i] = wifis[j]; wifis[j] = t;
+            }
+        }
+    }
+
+    for (int i = 0; i < n_wifi; i++) {
+        NetMenuEntry *w = add(NetMenuEntry::WIFI);
+        if (!w) break;
+        snprintf(w->ssid, sizeof(w->ssid), "%s", wifis[i].ssid);
+        snprintf(w->label, sizeof(w->label), "%s", wifis[i].ssid);
+        w->signal = wifis[i].signal;
+        w->checked = wifis[i].active;
+    }
+
+    // Radio toggles.
+    bool net_enabled = true, wifi_enabled = true;
+    fp = popen("nmcli -t radio", "r");
+    if (fp) {
+        char line[256];
+        if (fgets(line, sizeof(line), fp)) {
+            // Format: WIFI:WWAN:... (first field is wifi)
+            char *c1 = strchr(line, ':');
+            if (c1) {
+                *c1 = '\0';
+                wifi_enabled = (strcmp(line, "enabled") == 0);
+            }
+        }
+        pclose(fp);
+    }
+    fp = popen("nmcli -t networking", "r");
+    if (fp) {
+        char line[256];
+        if (fgets(line, sizeof(line), fp)) {
+            char *nl = strchr(line, '\n');
+            if (nl) *nl = '\0';
+            net_enabled = (strcmp(line, "enabled") == 0);
+        }
+        pclose(fp);
+    }
+
+    NetMenuEntry *sep = add(NetMenuEntry::SEPARATOR);
+    (void)sep;
+
+    NetMenuEntry *t1 = add(NetMenuEntry::TOGGLE);
+    if (t1) {
+        snprintf(t1->label, sizeof(t1->label), "Enable Networking");
+        t1->checked = net_enabled;
+    }
+    NetMenuEntry *t2 = add(NetMenuEntry::TOGGLE);
+    if (t2) {
+        snprintf(t2->label, sizeof(t2->label), "Enable Wi-Fi");
+        t2->checked = wifi_enabled;
+        t2->enabled = net_enabled;
+    }
+
+    NetMenuEntry *sep2 = add(NetMenuEntry::SEPARATOR);
+    (void)sep2;
+
+    NetMenuEntry *a1 = add(NetMenuEntry::ACTION);
+    if (a1) {
+        snprintf(a1->label, sizeof(a1->label), "Edit Connections...");
+        a1->action = NET_ACTION_EDIT_CONNECTIONS;
+    }
+    NetMenuEntry *a2 = add(NetMenuEntry::ACTION);
+    if (a2) {
+        snprintf(a2->label, sizeof(a2->label), "Connection Information");
+        a2->action = NET_ACTION_CONN_INFO;
+    }
+
+    return ws->net_menu.n_entries;
+}
+
+static int net_menu_create_buffer(OrbitStatus *ws) {
+    if (ws->net_menu.buffer) return 0;
+    int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->net_menu.width);
+    size_t size = (size_t)stride * ws->net_menu.height;
+    int fd = create_shm_fd(size);
+    if (fd < 0) return -1;
+
+    wl_shm_pool *pool = wl_shm_create_pool(ws->shm, fd, size);
+    ws->net_menu.buffer = wl_shm_pool_create_buffer(pool, 0,
+        ws->net_menu.width, ws->net_menu.height, stride, WL_SHM_FORMAT_ARGB8888);
+    wl_shm_pool_destroy(pool);
+
+    ws->net_menu.shm_data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (ws->net_menu.shm_data == MAP_FAILED) { ws->net_menu.shm_data = nullptr; return -1; }
+
+    ws->net_menu.cairo_surface = cairo_image_surface_create_for_data(
+        (unsigned char *)ws->net_menu.shm_data, CAIRO_FORMAT_ARGB32,
+        ws->net_menu.width, ws->net_menu.height, stride);
+    ws->net_menu.cr = cairo_create(ws->net_menu.cairo_surface);
+    return 0;
+}
+
+static void net_menu_destroy_buffer(OrbitStatus *ws) {
+    if (ws->net_menu.cr) cairo_destroy(ws->net_menu.cr);
+    ws->net_menu.cr = nullptr;
+    if (ws->net_menu.cairo_surface) cairo_surface_destroy(ws->net_menu.cairo_surface);
+    ws->net_menu.cairo_surface = nullptr;
+    if (ws->net_menu.shm_data) {
+        int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, ws->net_menu.width);
+        munmap(ws->net_menu.shm_data, (size_t)stride * ws->net_menu.height);
+    }
+    ws->net_menu.shm_data = nullptr;
+    if (ws->net_menu.buffer) wl_buffer_destroy(ws->net_menu.buffer);
+    ws->net_menu.buffer = nullptr;
+}
+
+// Compute the y range (in surface coords) of a menu entry given the scroll
+// offset. Returns false if the entry is scrolled out of view.
+static bool net_menu_entry_rect(OrbitStatus *ws, int idx, int *y0, int *y1) {
+    int y = ws->net_menu.header_h - ws->net_menu.scroll;
+    for (int i = 0; i < idx; i++) {
+        NetMenuEntry *en = &ws->net_menu.entries[i];
+        int h = (en->type == NetMenuEntry::SEPARATOR) ? 8 : ws->net_menu.item_h;
+        y += h;
+    }
+    NetMenuEntry *en = &ws->net_menu.entries[idx];
+    int h = (en->type == NetMenuEntry::SEPARATOR) ? 8 : ws->net_menu.item_h;
+    *y0 = y;
+    *y1 = y + h;
+    return (*y1 > 0 && *y0 < ws->net_menu.height);
+}
+
+// Total height of all menu entries (excluding the fixed header).
+static int net_menu_content_height(OrbitStatus *ws) {
+    int h = 0;
+    for (int i = 0; i < ws->net_menu.n_entries; i++) {
+        NetMenuEntry *en = &ws->net_menu.entries[i];
+        h += (en->type == NetMenuEntry::SEPARATOR) ? 8 : ws->net_menu.item_h;
+    }
+    return h;
+}
+
+// Maximum scroll offset (0 if content fits).
+static int net_menu_max_scroll(OrbitStatus *ws) {
+    int content = net_menu_content_height(ws);
+    int visible = ws->net_menu.height - ws->net_menu.header_h - 8;
+    int max = content - visible;
+    return (max > 0) ? max : 0;
+}
+
+// Clamp the scroll offset into the valid range.
+static void net_menu_clamp_scroll(OrbitStatus *ws) {
+    int max = net_menu_max_scroll(ws);
+    if (ws->net_menu.scroll < 0) ws->net_menu.scroll = 0;
+    if (ws->net_menu.scroll > max) ws->net_menu.scroll = max;
+}
+
+static void net_menu_render(OrbitStatus *ws) {
+    if (!ws->net_menu.visible || !ws->net_menu.cr) return;
+    cairo_t *cr = ws->net_menu.cr;
+    int w = ws->net_menu.width, h = ws->net_menu.height;
+
+    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
+    draw_rounded_rect(cr, 0, 0, w, h, 8);
+    cairo_set_source_rgba(cr, 0.12, 0.12, 0.22, 0.96);
+    cairo_fill(cr);
+
+    cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.3);
+    cairo_set_line_width(cr, 1);
+    draw_rounded_rect(cr, 0, 0, w, h, 8);
+    cairo_stroke(cr);
+
+    const char *ff = config_get(ws->cfg, "font_family", "Sans");
+    char title_font[64], item_font[64];
+    snprintf(title_font, sizeof(title_font), "%s Bold 13", ff);
+    snprintf(item_font, sizeof(item_font), "%s 11", ff);
+
+    // Header background.
+    cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.12);
+    cairo_rectangle(cr, 0, 0, w, ws->net_menu.header_h);
+    cairo_fill(cr);
+
+    // Header title.
+    PangoLayout *lay = pango_cairo_create_layout(cr);
+    PangoFontDescription *fd = pango_font_description_from_string(title_font);
+    pango_layout_set_font_description(lay, fd);
+    pango_font_description_free(fd);
+    pango_layout_set_text(lay, "Network", -1);
+    int tw, th;
+    pango_layout_get_pixel_size(lay, &tw, &th);
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    cairo_move_to(cr, 12, (ws->net_menu.header_h - th) / 2);
+    pango_cairo_show_layout(cr, lay);
+    g_object_unref(lay);
+
+    // Menu rows.
+    PangoFontDescription *fi = pango_font_description_from_string(item_font);
+    for (int i = 0; i < ws->net_menu.n_entries; i++) {
+        NetMenuEntry *en = &ws->net_menu.entries[i];
+        int y0, y1;
+        if (!net_menu_entry_rect(ws, i, &y0, &y1)) continue;
+
+        if (en->type == NetMenuEntry::SEPARATOR) {
+            cairo_set_source_rgba(cr, 1, 1, 1, 0.15);
+            cairo_set_line_width(cr, 1);
+            cairo_move_to(cr, 10, y0 + 4);
+            cairo_line_to(cr, w - 10, y0 + 4);
+            cairo_stroke(cr);
+            continue;
+        }
+
+        // Hover highlight.
+        if (i == ws->net_menu.hovered && en->enabled && en->type != NetMenuEntry::HEADER) {
+            cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.18);
+            cairo_rectangle(cr, 2, y0, w - 4, y1 - y0);
+            cairo_fill(cr);
+        }
+
+        // Checkmark / radio for toggles and wifi.
+        int text_x = 12;
+        if (en->type == NetMenuEntry::TOGGLE || en->type == NetMenuEntry::WIFI) {
+            int box = 14;
+            int bx = w - 12 - box;
+            int by = y0 + (y1 - y0 - box) / 2;
+            cairo_set_source_rgba(cr, 0.25, 0.25, 0.35, 0.9);
+            draw_rounded_rect(cr, bx, by, box, box, 3);
+            cairo_fill(cr);
+            if (en->checked) {
+                cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 1.0);
+                cairo_set_line_width(cr, 2);
+                cairo_move_to(cr, bx + 3, by + box / 2);
+                cairo_line_to(cr, bx + box / 2, by + box - 3);
+                cairo_line_to(cr, bx + box - 2, by + 3);
+                cairo_stroke(cr);
+            }
+            text_x = 12;
+        }
+
+        // Signal bars for wifi.
+        if (en->type == NetMenuEntry::WIFI) {
+            int bars_x = w - 12 - 14 - 16;  // left of the checkbox
+            int bars_y = y0 + (y1 - y0) / 2;
+            int nbars = (en->signal >= 80) ? 4 : (en->signal >= 55) ? 3 : (en->signal >= 30) ? 2 : 1;
+            for (int b = 0; b < 4; b++) {
+                int bh = 4 + b * 3;
+                cairo_set_source_rgba(cr, b < nbars ? 0.0 : 0.3, b < nbars ? 0.90 : 0.3, 1.0, b < nbars ? 0.9 : 0.4);
+                cairo_rectangle(cr, bars_x + b * 5, bars_y - bh, 3, bh);
+                cairo_fill(cr);
+            }
+        }
+
+        // Label.
+        PangoLayout *il = pango_cairo_create_layout(cr);
+        pango_layout_set_font_description(il, fi);
+        pango_layout_set_text(il, en->label, -1);
+        int iw, ih;
+        pango_layout_get_pixel_size(il, &iw, &ih);
+        if (en->type == NetMenuEntry::HEADER) {
+            cairo_set_source_rgba(cr, en->dim ? 0.7 : 1.0, en->dim ? 0.7 : 1.0, en->dim ? 0.7 : 1.0, en->dim ? 0.7 : 1.0);
+        } else {
+            cairo_set_source_rgba(cr, en->enabled ? 1.0 : 0.5, en->enabled ? 1.0 : 0.5, en->enabled ? 1.0 : 0.5, en->enabled ? 1.0 : 0.6);
+        }
+        cairo_move_to(cr, text_x, y0 + (y1 - y0 - ih) / 2);
+        pango_cairo_show_layout(cr, il);
+        g_object_unref(il);
+    }
+    pango_font_description_free(fi);
+
+    // Scrollbar (only when content overflows).
+    int max_scroll = net_menu_max_scroll(ws);
+    if (max_scroll > 0) {
+        int sb_x = w - 6;
+        int sb_top = ws->net_menu.header_h + 4;
+        int sb_bottom = h - 4;
+        int sb_h = sb_bottom - sb_top;
+        // Track.
+        cairo_set_source_rgba(cr, 1, 1, 1, 0.12);
+        cairo_rectangle(cr, sb_x, sb_top, 3, sb_h);
+        cairo_fill(cr);
+        // Thumb.
+        int thumb_h = (int)((double)sb_h * (double)(h - ws->net_menu.header_h - 8) /
+            (double)(net_menu_content_height(ws)));
+        if (thumb_h < 12) thumb_h = 12;
+        int thumb_y = sb_top + (int)((double)(sb_h - thumb_h) *
+            (double)ws->net_menu.scroll / (double)max_scroll);
+        cairo_set_source_rgba(cr, 0.0, 0.90, 1.0, 0.7);
+        cairo_rectangle(cr, sb_x, thumb_y, 3, thumb_h);
+        cairo_fill(cr);
+    }
+
+    cairo_surface_flush(ws->net_menu.cairo_surface);
+    wl_surface_attach(ws->net_menu.surface, ws->net_menu.buffer, 0, 0);
+    wl_surface_damage_buffer(ws->net_menu.surface, 0, 0, w, h);
+    wl_surface_commit(ws->net_menu.surface);
+}
+
+static void net_menu_layer_surface_configure(void *data,
+    zwlr_layer_surface_v1 *surface, uint32_t serial,
+    uint32_t width, uint32_t height) {
+    OrbitStatus *ws = (OrbitStatus *)data;
+    zwlr_layer_surface_v1_ack_configure(surface, serial);
+    if (width > 0) ws->net_menu.width = width;
+    if (height > 0) ws->net_menu.height = height;
+    if (!ws->net_menu.configured) {
+        ws->net_menu.configured = true;
+        if (net_menu_create_buffer(ws) == 0)
+            net_menu_render(ws);
+    }
+}
+
+static void net_menu_layer_surface_closed(void *data,
+    zwlr_layer_surface_v1 *surface) {
+    OrbitStatus *ws = (OrbitStatus *)data;
+    net_menu_destroy(ws);
+}
+
+static const zwlr_layer_surface_v1_listener net_menu_layer_surface_listener = {
+    .configure = net_menu_layer_surface_configure,
+    .closed = net_menu_layer_surface_closed,
+};
+
+static void net_menu_show(OrbitStatus *ws) {
+    if (ws->net_menu.visible) net_menu_destroy(ws);
+    if (ws->popup.visible) popup_destroy(ws);
+    if (ws->volume.visible) volume_slider_destroy(ws);
+
+    net_menu_collect(ws);
+
+    // Layout: fixed width, height based on content (capped).
+    ws->net_menu.width = 250;
+    ws->net_menu.header_h = 36;
+    ws->net_menu.item_h = 30;
+    int content_h = 0;
+    for (int i = 0; i < ws->net_menu.n_entries; i++) {
+        NetMenuEntry *en = &ws->net_menu.entries[i];
+        content_h += (en->type == NetMenuEntry::SEPARATOR) ? 8 : ws->net_menu.item_h;
+    }
+    int total_h = ws->net_menu.header_h + content_h + 8;
+    int max_h = 420;
+    ws->net_menu.height = (total_h > max_h) ? max_h : total_h;
+    ws->net_menu.scroll = 0;
+    ws->net_menu.hovered = -1;
+
+    ws->net_menu.surface = wl_compositor_create_surface(ws->compositor);
+    ws->net_menu.layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+        ws->layer_shell, ws->net_menu.surface, nullptr,
+        ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "orbit-status-netmenu");
+
+    zwlr_layer_surface_v1_add_listener(ws->net_menu.layer_surface,
+        &net_menu_layer_surface_listener, ws);
+
+    zwlr_layer_surface_v1_set_size(ws->net_menu.layer_surface, ws->net_menu.width, ws->net_menu.height);
+
+    const char *anchor_str = config_get(ws->cfg, "bar_anchor", "top");
+    bool bar_on_bottom = (strcmp(anchor_str, "bottom") == 0);
+    if (bar_on_bottom) {
+        zwlr_layer_surface_v1_set_anchor(ws->net_menu.layer_surface,
+            ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+        zwlr_layer_surface_v1_set_margin(ws->net_menu.layer_surface,
+            0, BAR_PADDING, ws->height + 4, 0);
+    } else {
+        zwlr_layer_surface_v1_set_anchor(ws->net_menu.layer_surface,
+            ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+        zwlr_layer_surface_v1_set_margin(ws->net_menu.layer_surface,
+            ws->height + 4, BAR_PADDING, 0, 0);
+    }
+    zwlr_layer_surface_v1_set_exclusive_zone(ws->net_menu.layer_surface, 0);
+
+    ws->net_menu.visible = true;
+    wl_surface_commit(ws->net_menu.surface);
+    wl_display_roundtrip(ws->display);
+}
+
+static void net_menu_destroy(OrbitStatus *ws) {
+    if (!ws->net_menu.visible) return;
+    ws->net_menu.visible = false;
+    ws->net_menu.hovered = -1;
+    net_menu_destroy_buffer(ws);
+    if (ws->net_menu.layer_surface) {
+        zwlr_layer_surface_v1_destroy(ws->net_menu.layer_surface);
+        ws->net_menu.layer_surface = nullptr;
+    }
+    if (ws->net_menu.surface) {
+        wl_surface_destroy(ws->net_menu.surface);
+        ws->net_menu.surface = nullptr;
+    }
+    ws->net_menu.configured = false;
+}
+
+// Find the entry index under the pointer (surface coords), or -1.
+static int net_menu_entry_at(OrbitStatus *ws, int x, int y) {
+    if (!ws->net_menu.visible) return -1;
+    for (int i = 0; i < ws->net_menu.n_entries; i++) {
+        int y0, y1;
+        if (!net_menu_entry_rect(ws, i, &y0, &y1)) continue;
+        if (y >= y0 && y < y1) return i;
+    }
+    return -1;
+}
+
+// Handle pointer motion over the menu: update hover highlight.
+static void net_menu_handle_motion(OrbitStatus *ws, int x, int y) {
+    if (!ws->net_menu.visible) return;
+    int idx = net_menu_entry_at(ws, x, y);
+    if (idx != ws->net_menu.hovered) {
+        ws->net_menu.hovered = idx;
+        net_menu_render(ws);
+    }
+}
+
+// Handle a scroll wheel event over the menu. Returns true if handled.
+static bool net_menu_handle_scroll(OrbitStatus *ws, int delta) {
+    if (!ws->net_menu.visible) return false;
+    if (net_menu_max_scroll(ws) <= 0) return true;  // nothing to scroll
+    // Scroll up (delta > 0) moves toward the top; scroll down moves down.
+    ws->net_menu.scroll += (delta > 0) ? -ws->net_menu.item_h : ws->net_menu.item_h;
+    net_menu_clamp_scroll(ws);
+    net_menu_render(ws);
+    return true;
+}
+
+// Handle a click on the menu. Returns true if handled.
+static bool net_menu_handle_click(OrbitStatus *ws, int x, int y) {
+    if (!ws->net_menu.visible) return false;
+    int idx = net_menu_entry_at(ws, x, y);
+    if (idx < 0) return false;
+    NetMenuEntry *en = &ws->net_menu.entries[idx];
+    if (!en->enabled) return true;
+
+    switch (en->type) {
+    case NetMenuEntry::WIFI: {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "nmcli device wifi connect '%s'", en->ssid);
+        execute_command(cmd);
+        net_menu_destroy(ws);
+        break;
+    }
+    case NetMenuEntry::TOGGLE: {
+        if (strstr(en->label, "Networking")) {
+            execute_command(en->checked ? "nmcli networking off" : "nmcli networking on");
+        } else {
+            execute_command(en->checked ? "nmcli radio wifi off" : "nmcli radio wifi on");
+        }
+        net_menu_destroy(ws);
+        break;
+    }
+    case NetMenuEntry::ACTION:
+        if (en->action == NET_ACTION_EDIT_CONNECTIONS)
+            execute_command("nmtui");
+        else if (en->action == NET_ACTION_CONN_INFO)
+            execute_command("nm-connection-editor");
+        net_menu_destroy(ws);
+        break;
+    default:
+        break;
+    }
+    return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -884,6 +1486,9 @@ static void pointer_enter(void *data, wl_pointer *pointer,
     if (ws->popup.visible && surface == ws->popup.surface)
         return;
 
+    if (ws->net_menu.visible && surface == ws->net_menu.surface)
+        return;
+
     bar_update_hover(ws->bar, ws->pointer_x, ws->pointer_y);
     sni_tray_update_hover(&ws->tray, ws->pointer_x, ws->pointer_y);
     render(ws);
@@ -935,6 +1540,14 @@ static void pointer_leave(void *data, wl_pointer *pointer,
         return;
     }
 
+    if (ws->net_menu.visible && surface == ws->net_menu.surface) {
+        if (ws->net_menu.hovered != -1) {
+            ws->net_menu.hovered = -1;
+            net_menu_render(ws);
+        }
+        return;
+    }
+
     bar_clear_hover(ws->bar);
     render(ws);
     if (ws->tooltip.visible)
@@ -966,6 +1579,12 @@ static void pointer_motion(void *data, wl_pointer *pointer,
     // Volume slider drag.
     if (ws->volume.visible && ws->current_pointer_surface == ws->volume.surface) {
         volume_slider_handle_motion(ws, x, y);
+        return;
+    }
+
+    // Network menu hover.
+    if (ws->net_menu.visible && ws->current_pointer_surface == ws->net_menu.surface) {
+        net_menu_handle_motion(ws, x, y);
         return;
     }
 
@@ -1026,6 +1645,15 @@ static void pointer_button(void *data, wl_pointer *pointer,
             return;
     }
 
+    // Network menu handles clicks on its own surface.
+    if (ws->net_menu.visible && ws->current_pointer_surface == ws->net_menu.surface) {
+        if (state == WL_POINTER_BUTTON_STATE_PRESSED && button == 0x110) {
+            net_menu_handle_click(ws, x, y);
+            return;
+        }
+        return;
+    }
+
     if (state != WL_POINTER_BUTTON_STATE_PRESSED) return;
 
     // Left-click on the volume tray item toggles the slider.
@@ -1040,9 +1668,27 @@ static void pointer_button(void *data, wl_pointer *pointer,
         }
     }
 
+    // Left-click on the nm-tray item toggles the network menu. nm-tray's own
+    // menu cannot be shown on Wayland (Qt can't create a grabbing popup
+    // without a parent window), so we render our own menu instead.
+    if (button == 0x110 && ws->tray.conn) {
+        int idx = sni_tray_item_at(&ws->tray, x, y);
+        if (idx >= 0 && strcmp(ws->tray.items[idx].id, "nm-tray") == 0) {
+            if (ws->net_menu.visible)
+                net_menu_destroy(ws);
+            else
+                net_menu_show(ws);
+            return;
+        }
+    }
+
     // If the volume slider is visible and the click is outside it, close it.
     if (ws->volume.visible && ws->current_pointer_surface != ws->volume.surface)
         volume_slider_destroy(ws);
+
+    // If the network menu is visible and the click is outside it, close it.
+    if (ws->net_menu.visible && ws->current_pointer_surface != ws->net_menu.surface)
+        net_menu_destroy(ws);
 
     // Tray handles left / middle / right clicks on its icons.
     if (ws->tray.conn && sni_tray_handle_click(&ws->tray, x, y, button))
@@ -1112,6 +1758,12 @@ static void pointer_axis(void *data, wl_pointer *pointer,
     if (axis != WL_POINTER_AXIS_VERTICAL_SCROLL) return;
 
     int x = ws->pointer_x, y = ws->pointer_y;
+
+    // Network menu scroll (when the pointer is over the menu surface).
+    if (ws->net_menu.visible && ws->current_pointer_surface == ws->net_menu.surface) {
+        net_menu_handle_scroll(ws, wl_fixed_to_int(value));
+        return;
+    }
 
     // Tray handles scroll over its icons (e.g. volume control).
     if (ws->tray.conn && sni_tray_handle_scroll(&ws->tray, x, y, wl_fixed_to_int(value)))
@@ -1353,6 +2005,7 @@ static void setup_plugin_watches(OrbitStatus *ws) {
 static void reload(OrbitStatus *ws) {
     if (ws->popup.visible) popup_destroy(ws);
     if (ws->volume.visible) volume_slider_destroy(ws);
+    if (ws->net_menu.visible) net_menu_destroy(ws);
     if (ws->tooltip.visible) tooltip_destroy(ws);
     destroy_all_buffers(ws);
     if (ws->bar) bar_destroy(ws->bar);
@@ -1530,7 +2183,7 @@ int main() {
             sni_tray_dispatch(&ws.tray);
         }
 
-check_reload:
+ check_reload:
         if (reload_requested) {
             reload_requested = 0;
             reload(&ws);
@@ -1543,6 +2196,7 @@ check_reload:
     sway_ipc_disconnect();
     if (ws.popup.visible) popup_destroy(&ws);
     if (ws.volume.visible) volume_slider_destroy(&ws);
+    if (ws.net_menu.visible) net_menu_destroy(&ws);
     if (ws.tooltip.visible) tooltip_destroy(&ws);
     destroy_all_buffers(&ws);
     if (ws.pointer) wl_pointer_destroy(ws.pointer);
