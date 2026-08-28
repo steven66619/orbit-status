@@ -1,49 +1,40 @@
-# Xorg/X11 Support Plan
+# orbit-status Development Plan
 
-## Goal
-Make orbit-status work with X11 window managers (primarily Xmonad via EWMH).
+## Current Architecture
 
-## Approach
-Abstract the display backend so both Wayland and X11 work from the same binary.
+`orbit-status` is a native Wayland status bar. It renders via the `wlr-layer-shell`
+protocol and reads workspace/window state from the Sway/i3 IPC socket. It also
+implements a StatusNotifierItem system tray over the session DBus.
 
-## Steps
+### Components
 
-### 1. Create a backend abstraction layer
-- Define a `DisplayBackend` interface/struct with virtual methods:
-  - `get_workspaces()` — list of workspaces with id, name, active state
-  - `get_active_window()` — active window class + title
-  - `track_windows()` — window list per workspace
-  - `get_outputs()` — monitor list
-  - `render()` — draw the bar surface
-  - `handle_events()` — event loop (fd-based like hypr_ev_fd)
+- **`main.cpp`** — Wayland setup, `poll()` event loop, input handling, tray/DBus wiring.
+- **`bar.cpp` / `bar.hpp`** — Rendering (workspaces, clock, pills, power buttons) and clickable regions.
+- **`lua_plugin.cpp`** — Isolated Lua plugin states for status pills.
+- **`sway_ipc.cpp`** — Minimal Sway/i3 IPC client + JSON parser.
+- **`sni_tray.cpp`** — StatusNotifierWatcher/StatusNotifierItem tray over DBus.
+- **`config.hpp`** — `key = value` config parser.
 
-### 2. Wayland backend (existing, refactor)
-- Move current `main.cpp` Wayland logic into `backend/wayland.cpp`
-- wlr-layer-shell for surface positioning
-- hyprctl for workspace/window info (keep as-is)
+## Roadmap
 
-### 3. X11 backend (new)
-- `backend/x11.cpp` and `backend/x11.hpp`
-- Use Xlib or XCB for basic display connection
-- EWMH atoms:
-  - `_NET_DESKTOP_NAMES` — workspace names
-  - `_NET_CURRENT_DESKKTOP` — active workspace
-  - `_NET_NUMBER_OF_DESKTOPS` — workspace count
-  - `_NET_ACTIVE_WINDOW` — active window
-  - `_NET_WM_NAME` / `WM_CLASS` — window title/class
-- Xdummy or override-redirect window for the bar surface
-- XSelectInput for event-driven updates
+### 1. Performance
+- [ ] Persistent Sway IPC connection (avoid reconnect on every tick).
+- [ ] Non-blocking tooltip/tray property fetches (avoid blocking the event loop).
 
-### 4. Config option
-- `backend = wayland` or `backend = x11` in config
-- Auto-detect based on `$WAYLAND_DISPLAY` or `$DISPLAY`
+### 2. Tray
+- [ ] Tooltip support for tray items (hover text).
+- [ ] Handle item `NewTitle` / `NewToolTip` signals more completely.
+- [ ] Configurable tray ordering / hidden items.
 
-### 5. Build system
-- Optional X11 deps: `pkg-config --cflags --libs x11 xcb`
-- Conditional compilation with `#ifdef WITH_X11`
-- Makefile target: `make WITH_X11=1`
+### 3. Wayland
+- [ ] Multi-monitor support (one bar per output).
+- [ ] Optional `xdg-shell` fallback for non-wlroots compositors.
 
-## Future Considerations
-- System tray support (XEmbed protocol) for X11
-- Multi-monitor support on X11
-- Fallback when neither Wayland nor X11 is detected
+### 4. Config
+- [ ] Hot-reload of tray icon size without reconnecting DBus.
+- [ ] Per-plugin click/scroll command configuration.
+
+## Notes
+
+- The X11/Xorg backend was dropped in the native Wayland port (`588e703`).
+- The tray uses a private DBus connection (shared connections must not be closed).

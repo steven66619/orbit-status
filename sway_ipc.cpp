@@ -18,7 +18,6 @@
 #endif
 
 #define IPC_MAGIC "i3-ipc"
-#define IPC_COMMAND 0
 #define IPC_GET_WORKSPACES 1
 #define IPC_GET_TREE 4
 
@@ -160,7 +159,14 @@ static bool parse_value(const char *&p, JsonValue &v) {
 /* IPC transport                                                       */
 /* ------------------------------------------------------------------ */
 
+// Persistent connection to the sway/i3 IPC socket. Opened lazily on first
+// use and reused across ticks; reset to -1 if the connection drops so the
+// next call reconnects (e.g. after sway restarts).
+static int sway_ipc_fd = -1;
+
 static int sway_ipc_connect() {
+    if (sway_ipc_fd >= 0) return sway_ipc_fd;
+
     const char *sock = getenv("SWAYSOCK");
     if (!sock) sock = getenv("I3SOCK");
     if (!sock) return -1;
@@ -176,7 +182,16 @@ static int sway_ipc_connect() {
         close(fd);
         return -1;
     }
+    sway_ipc_fd = fd;
     return fd;
+}
+
+// Close the persistent connection (e.g. on shutdown).
+void sway_ipc_disconnect() {
+    if (sway_ipc_fd >= 0) {
+        close(sway_ipc_fd);
+        sway_ipc_fd = -1;
+    }
 }
 
 static int write_all(int fd, const void *buf, size_t len) {
@@ -243,8 +258,7 @@ int sway_ipc_update_workspaces(Bar *bar) {
 
     std::string reply;
     int rc = ipc_send_recv(fd, IPC_GET_WORKSPACES, nullptr, 0, reply);
-    close(fd);
-    if (rc < 0) return -1;
+    if (rc < 0) { sway_ipc_disconnect(); return -1; }
 
     JsonValue root;
     const char *p = reply.c_str();
@@ -309,8 +323,7 @@ int sway_ipc_update_active_window(Bar *bar) {
 
     std::string reply;
     int rc = ipc_send_recv(fd, IPC_GET_TREE, nullptr, 0, reply);
-    close(fd);
-    if (rc < 0) return -1;
+    if (rc < 0) { sway_ipc_disconnect(); return -1; }
 
     JsonValue root;
     const char *p = reply.c_str();
@@ -326,15 +339,4 @@ int sway_ipc_update_active_window(Bar *bar) {
     const char *use_title = title.empty() ? nullptr : title.c_str();
     bar_set_active_window(bar, use_cls, use_title);
     return 0;
-}
-
-void sway_ipc_command(const char *cmd) {
-    if (!cmd || !cmd[0]) return;
-
-    int fd = sway_ipc_connect();
-    if (fd < 0) return;
-
-    std::string reply;
-    ipc_send_recv(fd, IPC_COMMAND, cmd, strlen(cmd), reply);
-    close(fd);
 }

@@ -261,11 +261,12 @@ static void emit_properties_changed(SniTray *tray) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Item property fetching                                             */
+/* Item property fetching (async)                                     */
 /* ------------------------------------------------------------------ */
 
-static bool get_string_prop(SniTray *tray, SniItem *item,
-                            const char *prop, char *out, size_t outsz) {
+// Start an asynchronous Get() for a string property. The reply is processed
+// later in sni_tray_dispatch via item_fetch_advance. Returns true if issued.
+static bool start_string_prop(SniTray *tray, SniItem *item, const char *prop) {
     DBusMessage *call = dbus_message_new_method_call(item->service,
         item->object_path, PROPS_IFACE, "Get");
     if (!call) return false;
@@ -275,16 +276,48 @@ static bool get_string_prop(SniTray *tray, SniItem *item,
         DBUS_TYPE_STRING, &prop,
         DBUS_TYPE_INVALID);
 
-    DBusError err;
-    dbus_error_init(&err);
-    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
-        tray->conn, call, 1000, &err);
-    dbus_message_unref(call);
-    if (!reply) {
-        dbus_error_free(&err);
+    DBusPendingCall *pc = nullptr;
+    if (!dbus_connection_send_with_reply(tray->conn, call, &pc, 1000)) {
+        dbus_message_unref(call);
         return false;
     }
+    dbus_message_unref(call);
+    if (!pc) return false;
+    item->pending = pc;
+    return true;
+}
 
+// Start an asynchronous Get() for IconPixmap.
+static bool start_icon_pixmap(SniTray *tray, SniItem *item) {
+    DBusMessage *call = dbus_message_new_method_call(item->service,
+        item->object_path, PROPS_IFACE, "Get");
+    if (!call) return false;
+    const char *iface = SNI_ITEM_IFACE;
+    const char *prop = "IconPixmap";
+    dbus_message_append_args(call,
+        DBUS_TYPE_STRING, &iface,
+        DBUS_TYPE_STRING, &prop,
+        DBUS_TYPE_INVALID);
+
+    DBusPendingCall *pc = nullptr;
+    if (!dbus_connection_send_with_reply(tray->conn, call, &pc, 1000)) {
+        dbus_message_unref(call);
+        return false;
+    }
+    dbus_message_unref(call);
+    if (!pc) return false;
+    item->pending = pc;
+    return true;
+}
+
+// Process a completed string-property reply into `out`.
+static bool finish_string_prop(DBusPendingCall *pc, char *out, size_t outsz) {
+    DBusMessage *reply = dbus_pending_call_steal_reply(pc);
+    if (!reply) return false;
+    if (dbus_message_get_type(reply) == DBUS_MESSAGE_TYPE_ERROR) {
+        dbus_message_unref(reply);
+        return false;
+    }
     bool ok = false;
     DBusMessageIter it, sub;
     dbus_message_iter_init(reply, &it);
@@ -301,25 +334,12 @@ static bool get_string_prop(SniTray *tray, SniItem *item,
     return ok;
 }
 
-// Fetch the IconPixmap property and build a surface from the best candidate.
-static cairo_surface_t *fetch_icon_pixmap(SniTray *tray, SniItem *item) {
-    DBusMessage *call = dbus_message_new_method_call(item->service,
-        item->object_path, PROPS_IFACE, "Get");
-    if (!call) return nullptr;
-    const char *iface = SNI_ITEM_IFACE;
-    const char *prop = "IconPixmap";
-    dbus_message_append_args(call,
-        DBUS_TYPE_STRING, &iface,
-        DBUS_TYPE_STRING, &prop,
-        DBUS_TYPE_INVALID);
-
-    DBusError err;
-    dbus_error_init(&err);
-    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
-        tray->conn, call, 1000, &err);
-    dbus_message_unref(call);
-    if (!reply) {
-        dbus_error_free(&err);
+// Process a completed IconPixmap reply into a cairo surface.
+static cairo_surface_t *finish_icon_pixmap(DBusPendingCall *pc, int icon_size) {
+    DBusMessage *reply = dbus_pending_call_steal_reply(pc);
+    if (!reply) return nullptr;
+    if (dbus_message_get_type(reply) == DBUS_MESSAGE_TYPE_ERROR) {
+        dbus_message_unref(reply);
         return nullptr;
     }
 
@@ -349,7 +369,7 @@ static cairo_surface_t *fetch_icon_pixmap(SniTray *tray, SniItem *item) {
                     dbus_message_iter_get_fixed_array(&st2, &data, &len);
                     if (data && len >= w * h * 4) {
                         bool better = (best_data == nullptr) ||
-                            (w <= tray->icon_size && w > best_w);
+                            (w <= icon_size && w > best_w);
                         if (better) {
                             best_w = w;
                             best_h = h;
@@ -360,27 +380,15 @@ static cairo_surface_t *fetch_icon_pixmap(SniTray *tray, SniItem *item) {
                 dbus_message_iter_next(&arr);
             }
             if (best_data)
-                result = surface_from_pixmap(best_data, best_w, best_h, tray->icon_size);
+                result = surface_from_pixmap(best_data, best_w, best_h, icon_size);
         }
     }
     dbus_message_unref(reply);
     return result;
 }
 
-static void item_refresh_icon(SniTray *tray, SniItem *item) {
-    if (item->icon) {
-        cairo_surface_destroy(item->icon);
-        item->icon = nullptr;
-        item->has_icon = false;
-    }
-
-    // Prefer a raw pixmap, then fall back to a themed icon name.
-    item->icon = fetch_icon_pixmap(tray, item);
-    if (item->icon) {
-        item->has_icon = true;
-        return;
-    }
-
+// Load the item's icon from a themed icon name (fallback when no pixmap).
+static void load_icon_by_name(SniTray *tray, SniItem *item) {
     char path[1024];
     if (find_icon_file(item->icon_name, item->icon_theme_path, path, sizeof(path))) {
         item->icon = load_icon_file(path, tray->icon_size);
@@ -389,17 +397,112 @@ static void item_refresh_icon(SniTray *tray, SniItem *item) {
     }
 }
 
+// Advance the item's async fetch state machine. Called from sni_tray_dispatch
+// when the item's pending call completes. Returns true if the item changed.
+static bool item_fetch_advance(SniTray *tray, SniItem *item) {
+    if (!item->pending) return false;
+
+    DBusPendingCall *pc = item->pending;
+    item->pending = nullptr;
+
+    bool changed = false;
+    switch (item->fetch_stage) {
+        case SNI_FETCH_ID:
+            finish_string_prop(pc, item->id, sizeof(item->id));
+            item->fetch_stage = SNI_FETCH_TITLE;
+            changed = true;
+            break;
+        case SNI_FETCH_TITLE:
+            finish_string_prop(pc, item->title, sizeof(item->title));
+            item->fetch_stage = SNI_FETCH_ICON_NAME;
+            changed = true;
+            break;
+        case SNI_FETCH_ICON_NAME:
+            finish_string_prop(pc, item->icon_name, sizeof(item->icon_name));
+            item->fetch_stage = SNI_FETCH_ICON_THEME_PATH;
+            changed = true;
+            break;
+        case SNI_FETCH_ICON_THEME_PATH:
+            finish_string_prop(pc, item->icon_theme_path, sizeof(item->icon_theme_path));
+            item->fetch_stage = SNI_FETCH_ICON_PIXMAP;
+            changed = true;
+            break;
+        case SNI_FETCH_ICON_PIXMAP: {
+            if (item->icon) {
+                cairo_surface_destroy(item->icon);
+                item->icon = nullptr;
+                item->has_icon = false;
+            }
+            item->icon = finish_icon_pixmap(pc, tray->icon_size);
+            if (item->icon) {
+                item->has_icon = true;
+            } else {
+                load_icon_by_name(tray, item);
+            }
+            item->fetch_stage = SNI_FETCH_DONE;
+            changed = true;
+            break;
+        }
+        default:
+            break;
+    }
+    dbus_pending_call_unref(pc);
+
+    // Kick off the next stage.
+    if (item->fetch_stage >= SNI_FETCH_ID && item->fetch_stage <= SNI_FETCH_ICON_PIXMAP) {
+        const char *prop = nullptr;
+        switch (item->fetch_stage) {
+            case SNI_FETCH_ID: prop = "Id"; break;
+            case SNI_FETCH_TITLE: prop = "Title"; break;
+            case SNI_FETCH_ICON_NAME: prop = "IconName"; break;
+            case SNI_FETCH_ICON_THEME_PATH: prop = "IconThemePath"; break;
+            case SNI_FETCH_ICON_PIXMAP: break;
+            default: break;
+        }
+        if (item->fetch_stage == SNI_FETCH_ICON_PIXMAP) {
+            start_icon_pixmap(tray, item);
+        } else if (prop) {
+            start_string_prop(tray, item, prop);
+        }
+    }
+    return changed;
+}
+
+// Begin the async property fetch for a newly-registered item.
 static void item_fetch_props(SniTray *tray, SniItem *item) {
-    get_string_prop(tray, item, "Id", item->id, sizeof(item->id));
-    get_string_prop(tray, item, "Title", item->title, sizeof(item->title));
-    get_string_prop(tray, item, "IconName", item->icon_name, sizeof(item->icon_name));
-    get_string_prop(tray, item, "IconThemePath", item->icon_theme_path, sizeof(item->icon_theme_path));
-    item_refresh_icon(tray, item);
+    item->fetch_stage = SNI_FETCH_ID;
+    start_string_prop(tray, item, "Id");
+}
+
+// Refresh the item's icon asynchronously (used on NewIcon signals).
+static void item_refresh_icon(SniTray *tray, SniItem *item) {
+    if (item->pending) {
+        dbus_pending_call_cancel(item->pending);
+        dbus_pending_call_unref(item->pending);
+        item->pending = nullptr;
+    }
+    if (item->icon) {
+        cairo_surface_destroy(item->icon);
+        item->icon = nullptr;
+        item->has_icon = false;
+    }
+    item->fetch_stage = SNI_FETCH_ICON_PIXMAP;
+    start_icon_pixmap(tray, item);
 }
 
 /* ------------------------------------------------------------------ */
 /* Item management                                                    */
 /* ------------------------------------------------------------------ */
+
+// Defensive clamp of n_items to the array bound. A corrupted n_items must
+// never cause an out-of-bounds read in the iteration loops below.
+static int tray_item_count(const SniTray *tray) {
+    if (!tray) return 0;
+    int n = tray->n_items;
+    if (n < 0) return 0;
+    if (n > SNI_MAX_ITEMS) return SNI_MAX_ITEMS;
+    return n;
+}
 
 static SniItem *find_item(SniTray *tray, const char *service) {
     for (int i = 0; i < tray->n_items; i++)
@@ -411,6 +514,11 @@ static SniItem *find_item(SniTray *tray, const char *service) {
 static void remove_item(SniTray *tray, int idx) {
     if (idx < 0 || idx >= tray->n_items) return;
     SniItem *item = &tray->items[idx];
+    if (item->pending) {
+        dbus_pending_call_cancel(item->pending);
+        dbus_pending_call_unref(item->pending);
+        item->pending = nullptr;
+    }
     if (item->icon) cairo_surface_destroy(item->icon);
     emit_item_unregistered(tray, item->service);
     tray->items[idx] = tray->items[--tray->n_items];
@@ -602,7 +710,14 @@ static DBusHandlerResult sni_filter(DBusConnection *conn, DBusMessage *msg, void
                     item_refresh_icon(tray, item);
                     if (tray->on_change) tray->on_change(tray->userdata);
                 } else if (member && strcmp(member, "NewToolTip") == 0) {
-                    get_string_prop(tray, item, "Title", item->title, sizeof(item->title));
+                    // Re-fetch the Title asynchronously.
+                    if (item->pending) {
+                        dbus_pending_call_cancel(item->pending);
+                        dbus_pending_call_unref(item->pending);
+                        item->pending = nullptr;
+                    }
+                    item->fetch_stage = SNI_FETCH_TITLE;
+                    start_string_prop(tray, item, "Title");
                     if (tray->on_change) tray->on_change(tray->userdata);
                 }
             }
@@ -772,12 +887,28 @@ void sni_tray_dispatch(SniTray *tray) {
     // Read from the fd (non-blocking, 0 timeout) and dispatch all pending
     // messages. Returns immediately if nothing is available.
     dbus_connection_read_write_dispatch(tray->conn, 0);
+
+    // Advance any completed async property fetches. This must run after
+    // dispatch so that replies are available, and it must not re-enter
+    // dispatch (the fetch handlers only parse replies and issue new sends).
+    bool changed = false;
+    int n = tray_item_count(tray);
+    for (int i = 0; i < n; i++) {
+        SniItem *item = &tray->items[i];
+        if (item->pending && dbus_pending_call_get_completed(item->pending)) {
+            if (item_fetch_advance(tray, item))
+                changed = true;
+        }
+    }
+    if (changed && tray->on_change)
+        tray->on_change(tray->userdata);
 }
 
 int sni_tray_width(SniTray *tray) {
     if (!tray) return 0;
-    if (tray->n_items == 0) return 0;
-    return tray->n_items * tray->icon_size + (tray->n_items - 1) * tray->spacing;
+    int n = tray_item_count(tray);
+    if (n == 0) return 0;
+    return n * tray->icon_size + (n - 1) * tray->spacing;
 }
 
 int sni_tray_render(SniTray *tray, cairo_t *cr, int bar_height, int right_x) {
@@ -786,7 +917,8 @@ int sni_tray_render(SniTray *tray, cairo_t *cr, int bar_height, int right_x) {
     int x = right_x;
     int y = (bar_height - tray->icon_size) / 2;
 
-    for (int i = 0; i < tray->n_items; i++) {
+    int n = tray_item_count(tray);
+    for (int i = 0; i < n; i++) {
         SniItem *item = &tray->items[i];
         x -= tray->icon_size;
 
@@ -822,7 +954,10 @@ bool sni_tray_update_hover(SniTray *tray, int x, int y) {
     if (!tray) return false;
     int old = tray->hovered_index;
     tray->hovered_index = -1;
-    for (int i = 0; i < tray->n_items; i++) {
+    // Clamp to the array bound defensively: a corrupted n_items must never
+    // cause an out-of-bounds read here.
+    int n = tray->n_items < 0 ? 0 : (tray->n_items > SNI_MAX_ITEMS ? SNI_MAX_ITEMS : tray->n_items);
+    for (int i = 0; i < n; i++) {
         SniItem *item = &tray->items[i];
         if (x >= item->x && x < item->x + item->w &&
             y >= item->y && y < item->y + item->h) {
@@ -846,7 +981,8 @@ static void send_item_method(SniTray *tray, SniItem *item, const char *method,
 
 bool sni_tray_handle_click(SniTray *tray, int x, int y, int button) {
     if (!tray) return false;
-    for (int i = 0; i < tray->n_items; i++) {
+    int n = tray_item_count(tray);
+    for (int i = 0; i < n; i++) {
         SniItem *item = &tray->items[i];
         if (x >= item->x && x < item->x + item->w &&
             y >= item->y && y < item->y + item->h) {
@@ -864,9 +1000,15 @@ bool sni_tray_handle_click(SniTray *tray, int x, int y, int button) {
 
 void sni_tray_destroy(SniTray *tray) {
     if (!tray) return;
-    for (int i = 0; i < tray->n_items; i++)
+    for (int i = 0; i < tray->n_items; i++) {
+        if (tray->items[i].pending) {
+            dbus_pending_call_cancel(tray->items[i].pending);
+            dbus_pending_call_unref(tray->items[i].pending);
+            tray->items[i].pending = nullptr;
+        }
         if (tray->items[i].icon)
             cairo_surface_destroy(tray->items[i].icon);
+    }
     tray->n_items = 0;
     if (tray->conn) {
         dbus_connection_remove_filter(tray->conn, sni_filter_wrapper, tray);

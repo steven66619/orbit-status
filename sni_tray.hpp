@@ -6,6 +6,19 @@
 
 #define SNI_MAX_ITEMS 16
 
+// Asynchronous property-fetch stages for an item. Property fetches are issued
+// with dbus_connection_send_with_reply (non-blocking) and completed in
+// sni_tray_dispatch so a slow/unresponsive tray item never blocks the event loop.
+enum SniFetchStage {
+    SNI_FETCH_NONE = 0,
+    SNI_FETCH_ID = 1,
+    SNI_FETCH_TITLE = 2,
+    SNI_FETCH_ICON_NAME = 3,
+    SNI_FETCH_ICON_THEME_PATH = 4,
+    SNI_FETCH_ICON_PIXMAP = 5,
+    SNI_FETCH_DONE = 6,
+};
+
 // A single StatusNotifierItem as tracked by the tray.
 struct SniItem {
     char service[256];      // bus name of the item (e.g. ":1.42")
@@ -17,6 +30,10 @@ struct SniItem {
     cairo_surface_t *icon = nullptr;  // rendered icon, already scaled to tray size
     int icon_w = 0, icon_h = 0;
     bool has_icon = false;
+
+    // Async property-fetch state.
+    DBusPendingCall *pending = nullptr;  // in-flight Get() call, if any
+    SniFetchStage fetch_stage = SNI_FETCH_NONE;
 
     // Clickable region, set during render.
     int x = 0, y = 0, w = 0, h = 0;

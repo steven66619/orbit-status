@@ -29,7 +29,8 @@ int lua_plugin_init(LuaPlugin *p, const char *path) {
 
     if (luaL_dofile(L, path) != LUA_OK) {
         fprintf(stderr, "lua: %s\n", lua_tostring(L, -1));
-        lua_pop(L, 1);
+        lua_close(L);
+        p->state = nullptr;
         return -1;
     }
 

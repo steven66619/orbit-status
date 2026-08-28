@@ -90,6 +90,13 @@ static void handle_sighup(int) {
     reload_requested = 1;
 }
 
+// Reap fire-and-forget children (execute_command) so they don't become
+// zombies. do_tick_fork() in lua_plugin.cpp does its own waitpid and already
+// tolerates ECHILD, so this handler is safe to reap everything.
+static void handle_sigchld(int) {
+    while (waitpid(-1, nullptr, WNOHANG) > 0) {}
+}
+
 static const char *config_path() {
     const char *home = getenv("HOME");
     if (!home) return nullptr;
@@ -729,6 +736,14 @@ static void pointer_button(void *data, wl_pointer *pointer,
         Clickable *c = &ws->bar->clickables[i];
         if (x >= c->x && x < c->x + c->w &&
             y >= c->y && y < c->y + c->h) {
+            // Lua plugin pills: invoke the plugin's on_click handler.
+            if (c->lua_plugin_idx >= 0 &&
+                c->lua_plugin_idx < ws->bar->n_lua_plugins) {
+                lua_plugin_call_onclick(
+                    &ws->bar->lua_plugins[c->lua_plugin_idx]);
+                bar_update_lua_plugins(ws->bar);
+                render(ws);
+            }
             switch (c->action) {
             case CLICK_POWEROFF:
                 popup_create(ws, 0);
@@ -812,18 +827,23 @@ static void registry_global(void *data, wl_registry *registry,
     uint32_t name, const char *interface, uint32_t version) {
     OrbitStatus *ws = (OrbitStatus *)data;
 
+    // Bind at the minimum of the version we need and the version the
+    // compositor advertises, to avoid requesting an unsupported version.
     if (strcmp(interface, wl_compositor_interface.name) == 0)
         ws->compositor = static_cast<wl_compositor *>(
-            wl_registry_bind(registry, name, &wl_compositor_interface, 4));
+            wl_registry_bind(registry, name, &wl_compositor_interface,
+                version < 4 ? version : 4));
     else if (strcmp(interface, wl_shm_interface.name) == 0)
         ws->shm = static_cast<wl_shm *>(
             wl_registry_bind(registry, name, &wl_shm_interface, 1));
     else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0)
         ws->layer_shell = static_cast<zwlr_layer_shell_v1 *>(
-            wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface, 4));
+            wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface,
+                version < 1 ? version : 1));
     else if (strcmp(interface, wl_seat_interface.name) == 0) {
         ws->seat = static_cast<wl_seat *>(
-            wl_registry_bind(registry, name, &wl_seat_interface, 7));
+            wl_registry_bind(registry, name, &wl_seat_interface,
+                version < 1 ? version : 1));
         wl_seat_add_listener(ws->seat, &seat_listener, ws);
     }
 }
@@ -924,6 +944,11 @@ static int setup_layer_surface(OrbitStatus *ws) {
 
 static void setup_plugin_watches(OrbitStatus *ws) {
     if (!ws->bar) return;
+    // Close any previous inotify fd (e.g. from an earlier reload).
+    if (ws->inotify_fd >= 0) {
+        close(ws->inotify_fd);
+        ws->inotify_fd = -1;
+    }
     ws->inotify_fd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
     if (ws->inotify_fd < 0) return;
 
@@ -1000,6 +1025,9 @@ static void reload(OrbitStatus *ws) {
             if (sni_tray_init(&ws->tray, ws->tray.icon_size, on_tray_change, ws) < 0)
                 fprintf(stderr, "orbit-status: tray disabled (DBus unavailable)\n");
         }
+    } else if (ws->tray.conn) {
+        // show_tray was turned off: tear down the tray.
+        sni_tray_destroy(&ws->tray);
     }
     setup_plugin_watches(ws);
     sway_ipc_update_workspaces(ws->bar);
@@ -1069,6 +1097,11 @@ int main() {
     sa.sa_handler = handle_sighup;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGHUP, &sa, nullptr);
+
+    struct sigaction sc = {};
+    sc.sa_handler = handle_sigchld;
+    sigemptyset(&sc.sa_mask);
+    sigaction(SIGCHLD, &sc, nullptr);
 
     ws.inotify_fd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
     if (ws.inotify_fd >= 0) {
@@ -1163,6 +1196,7 @@ check_reload:
     if (ws.timer_fd >= 0) close(ws.timer_fd);
     if (ws.inotify_fd >= 0) close(ws.inotify_fd);
     if (ws.tray.conn) sni_tray_destroy(&ws.tray);
+    sway_ipc_disconnect();
     if (ws.popup.visible) popup_destroy(&ws);
     if (ws.tooltip.visible) tooltip_destroy(&ws);
     destroy_all_buffers(&ws);

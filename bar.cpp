@@ -46,9 +46,6 @@ Bar *bar_create(int width, int height, Config *cfg, const char *ws_cmd_default) 
 
 void bar_destroy(Bar *bar) {
     if (!bar) return;
-    for (int i = 0; i < bar->n_icons; i++)
-        if (bar->icons[i])
-            cairo_surface_destroy(bar->icons[i]);
     bar_lua_plugins_destroy(bar);
     delete bar;
 }
@@ -57,15 +54,6 @@ void bar_lua_plugins_destroy(Bar *bar) {
     for (int i = 0; i < bar->n_lua_plugins; i++)
         lua_plugin_destroy(&bar->lua_plugins[i]);
     bar->n_lua_plugins = 0;
-}
-
-void bar_load_png_icon(Bar *bar, const char *path, int index) {
-    if (index < 0 || index >= 8) return;
-    cairo_surface_t *img = cairo_image_surface_create_from_png(path);
-    if (cairo_surface_status(img) == CAIRO_STATUS_SUCCESS)
-        bar->icons[index] = img;
-    else
-        cairo_surface_destroy(img);
 }
 
 void draw_rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r) {
@@ -606,16 +594,6 @@ void bar_render(Bar *bar, cairo_t *cr) {
         sni_tray_render(bar->tray, cr, bar->height, pw_start);
 }
 
-ClickAction bar_handle_click(Bar *bar, int x, int y) {
-    for (int i = 0; i < bar->n_clickables; i++) {
-        Clickable *c = &bar->clickables[i];
-        if (x >= c->x && x < c->x + c->w &&
-            y >= c->y && y < c->y + c->h)
-            return c->action;
-    }
-    return CLICK_NONE;
-}
-
 void bar_update_hover(Bar *bar, int x, int y) {
     bar->power_hovered = -1;
     bar->hovered_workspace = -1;
@@ -680,21 +658,6 @@ const char *prettify_class(const char *cls) {
     buf[o] = '\0';
 
     return buf;
-}
-
-void bar_update_workspace_names(Bar *bar, TrackedWindow *windows, int n_windows) {
-    for (int w = 0; w < bar->n_workspaces; w++) {
-        bar->workspaces[w].name[0] = '\0';
-        int ws_id = bar->workspaces[w].id;
-
-        for (int i = 0; i < n_windows; i++) {
-            if (windows[i].workspace_id == ws_id) {
-                const char *pretty = prettify_class(windows[i].cls);
-                snprintf(bar->workspaces[w].name, sizeof(bar->workspaces[w].name), "%s", pretty);
-                break;
-            }
-        }
-    }
 }
 
 void bar_set_workspaces(Bar *bar, const Workspace *workspaces, int n) {

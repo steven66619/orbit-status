@@ -11,7 +11,7 @@ int sway_ipc_update_workspaces(Bar *bar);
 // window fields. Returns 0 on success, -1 on failure.
 int sway_ipc_update_active_window(Bar *bar);
 
-// Send a sway command (e.g. "workspace number 3") over the IPC socket.
-void sway_ipc_command(const char *cmd);
+// Close the persistent IPC connection (call on shutdown).
+void sway_ipc_disconnect();
 
 #endif
