@@ -39,18 +39,18 @@ check_runtime() {
 install_deps_arch() {
     sudo pacman -S --needed --noconfirm \
         base-devel wayland wayland-protocols cairo pango \
-        libxkbcommon glib2 2>/dev/null || \
+        libxkbcommon glib2 librsvg dbus libpulse lua 2>/dev/null || \
     sudo pacman -S --needed --noconfirm \
-        wayland wayland-protocols cairo pango
+        wayland wayland-protocols cairo pango librsvg dbus libpulse lua
 }
 
 check_build_deps() {
-    for pkg in wayland-client cairo pangocairo; do
+    for pkg in wayland-client cairo pangocairo librsvg-2.0 dbus-1 lua; do
         if ! pkg-config --exists "$pkg" 2>/dev/null; then
             echo "ERROR: missing $pkg — install build dependencies first"
-            echo "  Arch:  sudo pacman -S base-devel wayland wayland-protocols cairo pango"
-            echo "  Debian: sudo apt install build-essential pkg-config libwayland-dev libcairo2-dev libpango1.0-dev wayland-protocols"
-            echo "  Fedora: sudo dnf install gcc pkgconfig wayland-devel wayland-protocols-devel cairo-devel pango-devel"
+            echo "  Arch:  sudo pacman -S base-devel wayland wayland-protocols cairo pango librsvg dbus libpulse lua"
+            echo "  Debian: sudo apt install build-essential pkg-config libwayland-dev libcairo2-dev libpango1.0-dev librsvg2-dev libdbus-1-dev wayland-protocols liblua5.4-dev"
+            echo "  Fedora: sudo dnf install gcc pkgconfig wayland-devel wayland-protocols-devel cairo-devel pango-devel librsvg2-devel dbus-devel lua-devel"
             exit 1
         fi
     done
@@ -70,14 +70,14 @@ case "$TARGET" in
         echo "==> Arch Linux: building and installing natively"
         install_deps_arch
         make clean 2>/dev/null || true
-        make
+        make orbit-status volume-sni
         sudo make install
         ;;
     local)
         echo "==> Local build: installing to /usr/local"
         check_build_deps
         make clean 2>/dev/null || true
-        make
+        make orbit-status volume-sni
         sudo make install
         ;;
     deb)
@@ -95,14 +95,14 @@ case "$TARGET" in
     deb-native)
         echo "==> Building .deb on Arch with dpkg"
         sudo pacman -S --needed --noconfirm dpkg base-devel \
-            wayland wayland-protocols cairo pango
+            wayland wayland-protocols cairo pango librsvg dbus libpulse lua
         dpkg-buildpackage -d -us -uc -b
         echo "==> .deb written to ../orbit-status_*.deb"
         ;;
     rpm-native)
         echo "==> Building .rpm on Arch with rpmbuild"
         sudo pacman -S --needed --noconfirm rpm-tools base-devel \
-            wayland wayland-protocols cairo pango
+            wayland wayland-protocols cairo pango librsvg dbus libpulse lua
         tarball=$(make_rpm_tarball orbit-status 1.0)
         cp orbit-status.spec "$HOME/rpmbuild/SPECS/"
         rpmbuild -ba "$HOME/rpmbuild/SPECS/orbit-status.spec"
@@ -115,15 +115,15 @@ case "$TARGET" in
             sh -c "
                 xbps-install -Syu -y &&
                 xbps-install -y base-devel wayland-devel wayland-protocols cairo-devel pango-devel \
-                    libxkbcommon-devel lua54-devel &&
-                make clean 2>/dev/null; make PREFIX=/usr &&
+                    libxkbcommon-devel lua54-devel librsvg-devel dbus-devel libpulse-devel &&
+                make clean 2>/dev/null; make PREFIX=/usr orbit-status volume-sni &&
                 mkdir -p /tmp/pkgdest &&
                 make install PREFIX=/usr DESTDIR=/tmp/pkgdest &&
                 cd /tmp/pkgdest &&
                 xbps-create -A x86_64 \
                     -n orbit-status-1.2_1 \
                     -s 'Lightweight Wayland status bar with Lua plugin support' \
-                    --dependencies 'wayland,cairo,pango,glib2,lua54' \
+                    --dependencies 'wayland,cairo,pango,glib2,lua54,librsvg,dbus,libpulse' \
                     --homepage 'https://github.com/steven66619/orbit-status-new' \
                     --license 'MIT' \
                     usr/ &&

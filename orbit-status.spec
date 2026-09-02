@@ -14,8 +14,12 @@ BuildRequires: pkgconfig
 BuildRequires: pkgconfig(wayland-client)
 BuildRequires: pkgconfig(cairo)
 BuildRequires: pkgconfig(pangocairo)
-BuildRequires: pkgconfig(lua5.4)
+BuildRequires: pkgconfig(librsvg-2.0)
+BuildRequires: pkgconfig(dbus-1)
+BuildRequires: pkgconfig(lua)
 BuildRequires: wayland-protocols-devel
+
+Requires: pulseaudio-utils
 
 %description
 A lightweight status bar for Hyprland, Sway, and other wlr-layer-shell
@@ -34,6 +38,7 @@ make install PREFIX=/usr DESTDIR=%{buildroot}
 
 %files
 %{_bindir}/orbit-status
+%{_bindir}/volume-sni
 %{_bindir}/orbit-status-update
 %{_datadir}/orbit-status/plugins/*.lua
 

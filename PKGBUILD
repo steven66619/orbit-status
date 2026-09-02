@@ -6,8 +6,8 @@ pkgdesc="Lightweight Wayland status bar with Lua plugin support"
 arch=('x86_64' 'aarch64')
 url="https://github.com/steven66619/orbit-status-new"
 license=('MIT')
-depends=('wayland' 'cairo' 'pango' 'glib2' 'lua54')
-makedepends=('wayland-protocols')
+depends=('wayland' 'cairo' 'pango' 'glib2' 'lua54' 'librsvg' 'dbus' 'libpulse')
+makedepends=('wayland-protocols' 'lua')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbit-status-new/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
