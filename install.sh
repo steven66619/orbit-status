@@ -29,6 +29,8 @@ uninstall() {
     echo "==> Removing $BINARY"
     rm -f "$BINARY"
     rm -f "$PREFIX/bin/volume-sni"
+    rm -f "$PREFIX/bin/orbit-status-update"
+    rm -rf "$PREFIX/share/orbit-status/plugins"
     echo "==> Done"
     exit 0
 }
@@ -43,7 +45,7 @@ for arg in "$@"; do
 done
 
 echo "==> Checking dependencies"
-for pkg in wayland-client cairo pangocairo; do
+for pkg in wayland-client wayland-protocols cairo pangocairo librsvg-2.0 dbus-1 lua; do
     if ! pkg-config --exists "$pkg" 2>/dev/null; then
         echo "ERROR: missing $pkg"
         exit 1
@@ -58,6 +60,9 @@ make -s orbit-status volume-sni
 echo "==> Installing to $BINARY"
 install -Dm755 orbit-status "$BINARY"
 install -Dm755 volume-sni "$PREFIX/bin/volume-sni"
+install -Dm755 scripts/bar-update "$PREFIX/bin/orbit-status-update"
+install -d "$PREFIX/share/orbit-status/plugins"
+install -m644 plugins/*.lua "$PREFIX/share/orbit-status/plugins/" 2>/dev/null || true
 
 if [ ! -f "$CONFIG_DIR/config" ]; then
     echo "==> Copying example config to $CONFIG_DIR/config"

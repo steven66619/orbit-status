@@ -14,7 +14,7 @@ for arg do
 done
 
 make clean 2>/dev/null || true
-make
+make orbit-status volume-sni
 
 if [ "$INSTALL" = 1 ]; then
     sudo make install
