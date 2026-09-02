@@ -44,6 +44,7 @@ struct SniTray {
     DBusConnection *conn = nullptr;
     bool watcher_owned = false;
     bool host_registered = false;
+    int ownership_retries = 0;  // retry counter for (re)acquiring the watcher name
 
     SniItem items[SNI_MAX_ITEMS];
     int n_items = 0;

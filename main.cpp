@@ -154,6 +154,22 @@ static void handle_sigchld(int) {
     while (waitpid(-1, nullptr, WNOHANG) > 0) {}
 }
 
+// Autostart volume-sni, the SNI volume control. Call this only after we own
+// the StatusNotifierWatcher name: volume-sni's registration is sent once and
+// is silently dropped if no watcher exists yet, so starting it too early would
+// leave the volume icon missing until a restart. volume-sni holds a
+// single-instance lock, so this is safe to run even if the session config also
+// starts it.
+static void spawn_volume_sni(void) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        execlp("volume-sni", "volume-sni", (char *)nullptr);
+        fprintf(stderr, "orbit-status: volume-sni not found in PATH; re-run install.sh or make install\n");
+        _exit(127);
+    }
+    // The child is reaped by handle_sigchld when it exits.
+}
+
 static const char *config_path() {
     const char *home = getenv("HOME");
     if (!home) return nullptr;
@@ -2061,6 +2077,8 @@ int main() {
         int tray_icon_size = config_get_int(ws.cfg, "tray_icon_size", 24);
         if (sni_tray_init(&ws.tray, tray_icon_size, on_tray_change, &ws) < 0)
             fprintf(stderr, "orbit-status: tray disabled (DBus unavailable)\n");
+        else if (ws.tray.watcher_owned)
+            spawn_volume_sni();
     }
 
     ws.display = wl_display_connect(nullptr);

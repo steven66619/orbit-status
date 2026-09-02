@@ -23,6 +23,10 @@
 #define ITEM_IFACE "org.kde.StatusNotifierItem"
 #define PROPS_IFACE "org.freedesktop.DBus.Properties"
 #define ITEM_PATH "/StatusNotifierItem"
+// Well-known name used purely as a single-instance lock so that orbit-status
+// (or a session autostart line) can start volume-sni unconditionally without
+// ever getting two tray icons.
+#define SNI_LOCK_NAME "org.orbit.volume-sni"
 
 static DBusConnection *conn = nullptr;
 static int current_volume = 0;   // 0..100
@@ -38,6 +42,21 @@ static void run_cmd(const char *cmd) {
         execl("/bin/sh", "sh", "-c", cmd, (char *)nullptr);
         _exit(127);
     }
+}
+
+// Register this item with the session's StatusNotifierWatcher. Fire-and-forget:
+// the watcher registers the item even if we don't wait for the reply, and the
+// sender's unique name (with /StatusNotifierItem) is what the watcher queries.
+static void register_with_watcher(void) {
+    const char *unique = dbus_bus_get_unique_name(conn);
+    if (!unique) return;
+    DBusMessage *reg = dbus_message_new_method_call(WATCHER_NAME, WATCHER_PATH,
+        WATCHER_IFACE, "RegisterStatusNotifierItem");
+    if (!reg) return;
+    dbus_message_append_args(reg, DBUS_TYPE_STRING, &unique, DBUS_TYPE_INVALID);
+    dbus_connection_send(conn, reg, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reg);
 }
 
 // Read the first line of a command's stdout into buf (truncated).
@@ -228,6 +247,35 @@ static void handle_scroll(DBusMessage *msg) {
 static DBusHandlerResult message_filter(DBusConnection *c, DBusMessage *msg,
                                         void *data) {
     (void)c; (void)data;
+
+    // If the watcher's owner appears or changes after we started (e.g. the bar
+    // comes up after us, or crashes and restarts), (re-)register our item. A
+    // registration sent while no watcher exists is silently dropped by the bus,
+    // so without this the icon would never show if the start order was wrong.
+    if (dbus_message_get_type(msg) == DBUS_MESSAGE_TYPE_SIGNAL) {
+        const char *iface = dbus_message_get_interface(msg);
+        const char *member = dbus_message_get_member(msg);
+        if (iface && strcmp(iface, "org.freedesktop.DBus") == 0 &&
+            member && strcmp(member, "NameOwnerChanged") == 0) {
+            DBusMessageIter it;
+            dbus_message_iter_init(msg, &it);
+            if (dbus_message_iter_get_arg_type(&it) != DBUS_TYPE_STRING)
+                return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+            const char *name, *old_owner, *new_owner;
+            dbus_message_iter_get_basic(&it, &name);
+            dbus_message_iter_next(&it);
+            dbus_message_iter_get_basic(&it, &old_owner);
+            (void)old_owner;
+            dbus_message_iter_next(&it);
+            dbus_message_iter_get_basic(&it, &new_owner);
+            if (strcmp(name, WATCHER_NAME) == 0 &&
+                new_owner && new_owner[0] != '\0') {
+                register_with_watcher();
+            }
+        }
+        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    }
+
     if (dbus_message_get_type(msg) != DBUS_MESSAGE_TYPE_METHOD_CALL)
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
@@ -312,28 +360,39 @@ int main(void) {
     }
     dbus_connection_set_exit_on_disconnect(conn, false);
 
+    // Single-instance lock: orbit-status autostarts us, and the user may also
+    // have an exec line in their compositor config; whichever starts second
+    // exits immediately instead of registering a duplicate tray icon.
+    if (dbus_bus_request_name(conn, SNI_LOCK_NAME,
+            DBUS_NAME_FLAG_DO_NOT_QUEUE, &err) != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
+        dbus_error_free(&err);
+        dbus_connection_close(conn);
+        dbus_connection_unref(conn);
+        return 0;
+    }
+
     if (!dbus_connection_add_filter(conn, message_filter, nullptr, nullptr)) {
         fprintf(stderr, "volume-sni: failed to add dbus filter\n");
         return 1;
     }
 
-    // Register the item with the watcher using our unique bus name.
-    const char *unique = dbus_bus_get_unique_name(conn);
-    if (!unique) {
-        fprintf(stderr, "volume-sni: could not get unique bus name\n");
-        return 1;
+    // Watch for the watcher's owner appearing or changing so we can re-register
+    // (handled in message_filter). Registering the match before the initial
+    // registration below guarantees we never miss an owner transition.
+    DBusMessage *match = dbus_message_new_method_call("org.freedesktop.DBus",
+        "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch");
+    if (match) {
+        const char *rule = "type='signal',interface='org.freedesktop.DBus',"
+            "member='NameOwnerChanged',arg0='" WATCHER_NAME "'";
+        dbus_message_append_args(match, DBUS_TYPE_STRING, &rule, DBUS_TYPE_INVALID);
+        DBusMessage *mr = dbus_connection_send_with_reply_and_block(conn, match, 1000, &err);
+        if (mr) dbus_message_unref(mr);
+        else dbus_error_free(&err);
+        dbus_message_unref(match);
     }
 
-    DBusMessage *reg = dbus_message_new_method_call(WATCHER_NAME, WATCHER_PATH,
-        WATCHER_IFACE, "RegisterStatusNotifierItem");
-    if (!reg) return 1;
-    dbus_message_append_args(reg, DBUS_TYPE_STRING, &unique, DBUS_TYPE_INVALID);
-    // Fire-and-forget: the watcher registers the item even if we don't wait for
-    // the reply, and blocking here can time out depending on the watcher's
-    // dispatch timing. The item is confirmed via the watcher's registered list.
-    dbus_connection_send(conn, reg, nullptr);
-    dbus_connection_flush(conn);
-    dbus_message_unref(reg);
+    // Register the item with the watcher using our unique bus name.
+    register_with_watcher();
 
     refresh_state();
     fprintf(stderr, "volume-sni: registered, volume=%d%% muted=%d\n",

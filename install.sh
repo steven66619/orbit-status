@@ -28,6 +28,7 @@ EOF
 uninstall() {
     echo "==> Removing $BINARY"
     rm -f "$BINARY"
+    rm -f "$PREFIX/bin/volume-sni"
     echo "==> Done"
     exit 0
 }
@@ -52,10 +53,11 @@ echo "    all found"
 
 echo "==> Building"
 make -s clean 2>/dev/null || true
-make -s
+make -s orbit-status volume-sni
 
 echo "==> Installing to $BINARY"
 install -Dm755 orbit-status "$BINARY"
+install -Dm755 volume-sni "$PREFIX/bin/volume-sni"
 
 if [ ! -f "$CONFIG_DIR/config" ]; then
     echo "==> Copying example config to $CONFIG_DIR/config"

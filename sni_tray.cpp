@@ -892,11 +892,38 @@ int sni_tray_get_fd(SniTray *tray) {
     return fd;
 }
 
+// (Re)acquire the watcher well-known name. If the initial request in
+// sni_tray_init lost a race with the previous owner's teardown (e.g. the bar
+// was restarted immediately after being killed), the tray would otherwise stay
+// name-less forever, showing no icons for the rest of the session. Called from
+// sni_tray_dispatch whenever we detect we do not own the name yet.
+static void try_acquire_watcher(SniTray *tray) {
+    if (!tray->conn || tray->watcher_owned) return;
+    DBusError err;
+    dbus_error_init(&err);
+    int ret = dbus_bus_request_name(tray->conn, SNI_WATCHER_NAME,
+        DBUS_NAME_FLAG_DO_NOT_QUEUE, &err);
+    if (ret == DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
+        tray->watcher_owned = true;
+        tray->host_registered = true;
+        emit_host_registered(tray);
+        emit_properties_changed(tray);
+        fprintf(stderr, "orbit-status: tray: acquired watcher name\n");
+    }
+    dbus_error_free(&err);
+}
+
 void sni_tray_dispatch(SniTray *tray) {
     if (!tray || !tray->conn) return;
     // Read from the fd (non-blocking, 0 timeout) and dispatch all pending
     // messages. Returns immediately if nothing is available.
     dbus_connection_read_write_dispatch(tray->conn, 0);
+
+    // If we lost the initial watcher-name request race, retry periodically
+    // (rate-limited). The NameOwnerChanged signal wakes this up right when the
+    // previous owner's name is actually released.
+    if (!tray->watcher_owned && tray->ownership_retries++ % 50 == 0)
+        try_acquire_watcher(tray);
 
     // Advance any completed async property fetches. This must run after
     // dispatch so that replies are available, and it must not re-enter
