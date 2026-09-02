@@ -12,7 +12,17 @@ Add to `/etc/pacman.conf`:
 
 ```ini
 [orbit-status]
+SigLevel = Optional
 Server = https://steven66619.github.io/orbit-status/arch/x86_64
+```
+
+Until GitHub Pages is enabled for the repository, the same repo is served
+from the raw file host:
+
+```ini
+[orbit-status]
+SigLevel = Optional
+Server = https://raw.githubusercontent.com/steven66619/orbit-status/gh-pages/arch/x86_64
 ```
 
 Then install with:
@@ -20,6 +30,10 @@ Then install with:
 ```sh
 sudo pacman -Sy orbit-status
 ```
+
+`SigLevel = Optional` is required because packages are currently unsigned
+(pacman's default is `Required`); signatures are verified automatically once
+CI signing is configured.
 
 ## Debian/Ubuntu
 
