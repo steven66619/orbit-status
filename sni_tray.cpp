@@ -795,14 +795,24 @@ static DBusHandlerResult sni_filter(DBusConnection *conn, DBusMessage *msg, void
                 }
             }
 
-            // Track the watcher name itself. When it moves to another
-            // process while we are in host mode (a panel took over, or the
-            // squatter we could not replace restarted), re-sync our item
-            // list with the new watcher on the next dispatch tick.
+            // Track the watcher name itself. Two cases:
+            //  - We owned it but were replaced (a panel or a fresh bar took
+            //    the name with REPLACE_EXISTING): drop the ownership flag so
+            //    the dispatch loop re-acquires it, and meanwhile re-sync
+            //    against the new owner as a host so tray icons stay up.
+            //  - We are a host and the name moved to another owner (a panel
+            //    took over, or the squatter we could not replace restarted):
+            //    re-sync our item list with the new watcher next dispatch.
             if (strcmp(name, SNI_WATCHER_NAME) == 0 &&
-                new_owner && new_owner[0] != '\0' && !tray->watcher_owned) {
+                new_owner && new_owner[0] != '\0') {
                 const char *us = dbus_bus_get_unique_name(tray->conn);
-                if (!us || strcmp(new_owner, us) != 0)
+                bool we_are_owner = us && strcmp(new_owner, us) == 0;
+                if (tray->watcher_owned && !we_are_owner) {
+                    tray->watcher_owned = false;
+                    tray->ownership_retries = 0;
+                    tray->last_owner_retry = 0;
+                }
+                if (!tray->watcher_owned && !we_are_owner)
                     tray->last_host_sync = 0;
             }
             return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
