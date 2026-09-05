@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# orbit-status-release: run a full release in one command.
+#
+#   ./scripts/release [VERSION]
+#
+# VERSION is a new, higher version number (default: patch bump of PKGBUILD's
+# pkgver, e.g. 1.4 -> 1.5). The script:
+#
+#   1. checks the tree is clean, the remote is reachable, and the version is
+#      unused;
+#   2. bumps PKGBUILD's pkgver (the single source of truth) and commits;
+#   3. tags vVERSION and pushes main + the tag (the PKGBUILD builds from the
+#      v$pkgver GitHub tarball, so the tag MUST be on the remote before
+#      makepkg runs);
+#   4. builds the package with makepkg and verifies its .PKGINFO version;
+#   5. refreshes repo/arch/x86_64: new package in, old package and metadata
+#      out, repo-add, then copies the db/files payloads over the plain names
+#      (repo-add makes symlinks; the raw-URL fallback in repo/README.md
+#      serves link text, which breaks pacman);
+#   6. force-adds the gitignored package file, commits, pushes.
+#
+# The GitHub Actions workflow regenerates signed metadata and deploys Pages
+# from the pushed repo/ contents, so nothing else is needed.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+
+# Same convention as repo/update-repo.sh.
+ARCH_DIR="repo/arch/x86_64"
+ARCH="x86_64"
+PKGNAME="orbit-status"
+ORIGIN_URL="$(git remote get-url origin)"
+
+die()  { echo "ERROR: $*" >&2; exit 1; }
+step() { echo "==> $*"; }
+
+# Commits need an identity; this repo's history uses Steven Atkinson, but
+# respect whatever git config says first (never touch the config itself).
+if [ -z "$(git config user.email || true)" ]; then
+    export GIT_AUTHOR_NAME="Steven Atkinson" GIT_AUTHOR_EMAIL="steven4x4@gmail.com"
+    export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+fi
+
+current_version() {
+    sed -n 's/^pkgver=\([0-9A-Za-z.]*\)$/\1/p' PKGBUILD
+}
+
+# ---------- arguments ----------
+
+CUR="$(current_version)"
+[ -n "$CUR" ] || die "cannot read pkgver from PKGBUILD"
+if [ $# -gt 1 ]; then
+    echo "Usage: ./scripts/release [VERSION]" >&2
+    exit 2
+fi
+if [ $# -eq 1 ]; then
+    NEW="$1"
+else
+    NEW="${CUR%.*}.$(( ${CUR##*.} + 1 ))"
+fi
+TAG="v$NEW"
+
+case "$NEW" in
+    *[!0-9A-Za-z.]*|.*.) die "invalid version '$NEW'" ;;
+esac
+if [ "$(printf '%s\n' "$CUR" "$NEW" | sort -V | tail -1)" != "$NEW" ] || [ "$NEW" = "$CUR" ]; then
+    die "version must be greater than current ($CUR), got '$NEW'"
+fi
+
+# ---------- preflight ----------
+
+step "Releasing $CUR -> $NEW ($TAG)"
+
+[ -z "$(git status --porcelain)" ] || die "working tree not clean; commit or stash first"
+git ls-remote --exit-code "$ORIGIN_URL" "refs/tags/$TAG" >/dev/null 2>&1 \
+    && die "tag $TAG already exists on the remote" || true
+# Plain ls-remote (no --exit-code): rc=2 also fires on repos with zero refs,
+# which says nothing about reachability.
+git ls-remote "$ORIGIN_URL" >/dev/null 2>&1 || die "remote $ORIGIN_URL unreachable"
+# A remote main ahead of local would fail the push AFTER the bump commit and
+# tag exist — catch it before anything is created.
+if git fetch -q "$ORIGIN_URL" main 2>/dev/null; then
+    [ "$(git rev-list --count main..FETCH_HEAD)" -eq 0 ] \
+        || die "remote main has commits not present locally; pull/rebase first"
+fi
+command -v makepkg >/dev/null || die "makepkg not found (need Arch build tools)"
+command -v repo-add >/dev/null || die "repo-add not found (need pacman-contrib/pacman)"
+
+# ---------- 1. bump + commit + tag + push ----------
+
+step "Bumping PKGBUILD pkgver to $NEW"
+sed -i "s/^pkgver=.*/pkgver=$NEW/" PKGBUILD
+git add PKGBUILD
+git commit -m "Bump version to $NEW
+
+🤖 Generated with Codebuff
+Co-Authored-By: Codebuff <noreply@codebuff.com>"
+git tag "$TAG"
+
+step "Pushing main + $TAG"
+git push origin main
+git push origin "$TAG"
+[ "$(git ls-remote "$ORIGIN_URL" "refs/tags/$TAG" | wc -l)" -ge 1 ] \
+    || die "tag $TAG did not land on the remote"
+
+# ---------- 2. build ----------
+
+step "Building package with makepkg (source: $TAG tarball)"
+rm -rf src pkg
+makepkg -f
+
+PKG="$(ls -t "$PKGNAME-$NEW-*-$ARCH.pkg.tar.zst" 2>/dev/null | head -1 || true)"
+[ -n "$PKG" ] || PKG="$(ls -t *.pkg.tar.zst 2>/dev/null | head -1 || true)"
+[ -n "$PKG" ] || die "makepkg produced no package"
+BUILT_VER="$(tar -xOf "$PKG" .PKGINFO | sed -n 's/^pkgver = //p')"
+[ "$BUILT_VER" = "$NEW-1" ] || die "$PKG has version $BUILT_VER, expected $NEW-1"
+
+# ---------- 3. refresh repo ----------
+
+step "Refreshing $ARCH_DIR"
+# Copy the new package in, then remove every other package version (paths
+# come from the glob itself, so pkgrel/arch variations are handled).
+cp "$PKG" "$ARCH_DIR/"
+for f in "$ARCH_DIR"/"$PKGNAME"-*-"$ARCH".pkg.tar.zst; do
+    [ "$f" = "$ARCH_DIR/$PKG" ] || rm -f "$f"
+done
+rm -f "$ARCH_DIR"/"$PKGNAME".db "$ARCH_DIR"/"$PKGNAME".db.tar.zst \
+      "$ARCH_DIR"/"$PKGNAME".files "$ARCH_DIR"/"$PKGNAME".files.tar.zst
+( cd "$ARCH_DIR" && repo-add "$PKGNAME".db.tar.zst "$(basename "$PKG")" ) \
+    || die "repo-add failed"
+# repo-add leaves db/files as symlinks to the .tar.zst payloads; replace them
+# with regular files so the raw-URL fallback serves real content.
+rm -f "$ARCH_DIR/$PKGNAME.db" "$ARCH_DIR/$PKGNAME.files"
+cp "$ARCH_DIR/$PKGNAME.db.tar.zst" "$ARCH_DIR/$PKGNAME.db"
+cp "$ARCH_DIR/$PKGNAME.files.tar.zst" "$ARCH_DIR/$PKGNAME.files"
+[ -s "$ARCH_DIR/$PKGNAME.db" ] || die "repo db missing/empty; repo-add did not run"
+cp "$ARCH_DIR/orbit-status.db.tar.zst" "$ARCH_DIR/orbit-status.db"
+cp "$ARCH_DIR/orbit-status.files.tar.zst" "$ARCH_DIR/orbit-status.files"
+
+# ---------- 4. commit + push repo ----------
+
+step "Committing and pushing repo update"
+git add -f "$ARCH_DIR"
+git status --porcelain -- "$ARCH_DIR" | grep -q . || die "repo dir unchanged; nothing to release?"
+git commit -m "Release $NEW in Arch repo
+
+orbit-status-$NEW-1 replaces $CUR-1 in repo/arch/x86_64.
+
+🤖 Generated with Codebuff
+Co-Authored-By: Codebuff <noreply@codebuff.com>"
+git push origin main
+
+# ---------- cleanup ----------
+
+rm -rf src pkg "$PKG"
+git status --porcelain | grep -q . && {
+    git status --short >&2
+    die "untracked/modified files remain after release"
+}
+
+echo ""
+echo "==> Released $NEW."
+echo "    Tag:        $TAG (pushed)"
+echo "    Package:    $ARCH_DIR/$PKG"
+echo "    CI:         the publish-packages workflow is deploying to Pages"
+echo "    Users:      sudo pacman -Sy orbit-status"

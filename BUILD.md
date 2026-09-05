@@ -60,6 +60,15 @@ To wipe out temporary object files and the generated protocol stubs before a fre
 make clean
 ```
 
+### Releasing a New Version
+
+```bash
+./scripts/release          # patch bump of PKGBUILD's pkgver (e.g. 1.4 -> 1.5)
+./scripts/release 2.0      # or an explicit version
+```
+
+One command runs the whole release: clean-tree and remote preflight checks, PKGBUILD `pkgver` bump, commit, `v<version>` tag, push (the PKGBUILD sources the tag tarball from GitHub, so it must land first), `makepkg` build with a `.PKGINFO` version check, refresh of `repo/arch/x86_64/` (new package in, old one out, `repo-add`, db/files restored as regular files for the raw-URL fallback), and a final commit + push that triggers the Pages deploy workflow. Requires an Arch machine with `makepkg`/`repo-add` and push access to the origin remote.
+
 ## Project Directory Structure
 
 * **`main.cpp`** - Core C++ engine: Wayland setup, the `poll()` event loop, input handling, and the tray/DBus integration.
