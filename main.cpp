@@ -3,6 +3,7 @@
 #include <cstring>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <ctime>
@@ -2063,11 +2064,50 @@ static void on_timer(OrbitStatus *ws) {
     render(ws);
 }
 
+// Single-instance guard: only one bar should run per user session. sway's
+// exec_always re-runs the command on every reload, which would otherwise
+// stack a bar per reload. flock(2) is released automatically when this
+// process dies (even via abort() on a lost Wayland connection), so the lock
+// self-heals after sway crashes or restarts.
+// Returns a held lock fd on success, -1 if another instance is already
+// running, or -2 if the lock file could not be created (run anyway).
+static int acquire_single_instance_lock(void) {
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+    char path[512];
+    if (runtime && runtime[0] != '\0')
+        snprintf(path, sizeof(path), "%s/orbit-status.lock", runtime);
+    else
+        snprintf(path, sizeof(path), "/tmp/orbit-status-%d.lock", (int)getuid());
+    int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        fprintf(stderr, "orbit-status: cannot open %s (%s); running without lock\n",
+            path, strerror(errno));
+        return -2;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
 /* ------------------------------------------------------------------ */
 /* Main                                                               */
 /* ------------------------------------------------------------------ */
 
 int main() {
+    int lock_fd = acquire_single_instance_lock();
+    if (lock_fd < 0) {
+        // -1 means another healthy instance holds the lock; -2 means the
+        // lock file was unwritable, in which case we proceed unlocked.
+        if (lock_fd == -1)
+            fprintf(stderr, "orbit-status: another instance is already running; exiting\n");
+        else
+            lock_fd = -1;  // keep main() symmetric; nothing to hold
+        if (lock_fd == -1)
+            return 0;
+    }
+
     OrbitStatus ws;
 
     ws.cfg = config_load(config_path());
