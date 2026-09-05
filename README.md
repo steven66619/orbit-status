@@ -44,6 +44,44 @@ function tick()
 end
 ```
 
+## Autostarting
+
+`orbit-status` does not register itself with your session — add one line to start it at login.
+
+**Sway / i3** — add this to `~/.config/sway/config` (use `exec_always` instead if you also want the bar to restart on `swaymsg reload`):
+
+```text
+exec_always orbit-status
+```
+
+If `orbit-status` is not on your `PATH`, use the full path. It depends on how you installed it:
+
+* `./install.sh` (default) installs to `/usr/local/bin/orbit-status`
+* distro packages (`make PREFIX=/usr`, Arch PKGBUILD, etc.) install to `/usr/bin/orbit-status`
+
+Check with `command -v orbit-status`. A stale path here is the classic "bar doesn't autostart" failure — `exec` of a nonexistent path fails silently.
+
+### Tray ownership (why icons always show)
+
+The tray needs to own `org.kde.StatusNotifierWatcher` on the session bus. `orbit-status` handles every conflict natively, with no helper scripts:
+
+* **Another shell/panel owns the name** (plasmashell, xfce4-panel, lxqt-panel, ...): `orbit-status` registers as a StatusNotifierHost against that watcher instead, subscribes to its registration signals, and periodically pulls its item list — so every tray icon still renders in the bar even though the name is taken. (DBus only allows replacing a name whose owner opted in with `AllowReplacement`, which shells never do — so coexisting as a host is the only correct strategy.)
+* **A stale/hung previous `orbit-status` owns the name**: the new instance replaces it immediately, because `orbit-status` requests the name with `AllowReplacement`.
+* **The previous bar died just before restart** (name still registered asynchronously): the takeover request plus a rate-limited retry in the event loop recovers the name as soon as the bus releases it.
+* **Items that registered before the bar came up** are adopted from the watcher's `RegisteredStatusNotifierItems` list, so icons are never missed due to start order.
+
+**Any session with XDG autostart** (GNOME, KDE, or sway via `exec dex --autostart --environment sway`): create `~/.config/autostart/orbit-status.desktop`:
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=orbit-status
+Comment=Ultra-lightweight Wayland status bar
+Exec=/usr/bin/orbit-status
+```
+
+Note that `exec` lines in sway only run when the session starts — they are not re-run on `swaymsg reload`.
+
 ## Building & Installation
 
 For a comprehensive layout of required software headers, compilation instructions, and package manager execution strings across Arch, Debian, Fedora, and Void Linux, refer directly to our **[BUILD.md](./BUILD.md)** specification document.

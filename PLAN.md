@@ -19,9 +19,11 @@ implements a StatusNotifierItem system tray over the session DBus.
 
 ### 1. Performance
 - [ ] Persistent Sway IPC connection (avoid reconnect on every tick).
-- [ ] Non-blocking tooltip/tray property fetches (avoid blocking the event loop).
+- [x] Non-blocking tooltip/tray property fetches (avoid blocking the event loop).
 
 ### 2. Tray
+- [x] Robust watcher ownership: `AllowReplacement` + `ReplaceExisting` takeover for stale instances, time-based retry, and host mode (registering against another app's watcher with item-list sync) when a shell/panel owns the name.
+- [x] Drain libdbus outbound queue after sends and dispatch the tray on every event-loop iteration; a POLLIN-only loop stalled the fetch chain (no icons).
 - [ ] Tooltip support for tray items (hover text).
 - [ ] Handle item `NewTitle` / `NewToolTip` signals more completely.
 - [ ] Configurable tray ordering / hidden items.

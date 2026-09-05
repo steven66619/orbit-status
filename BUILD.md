@@ -50,6 +50,8 @@ sudo make install
 
 Installs the binary to `/usr/local/bin/orbit-status`, the update helper to `/usr/local/bin/orbit-status-update`, and the bundled Lua plugins to `/usr/local/share/orbit-status/plugins/`.
 
+> **Install prefix matters for autostart.** The default `PREFIX=/usr/local` puts the binary in `/usr/local/bin/orbit-status`, while distro packages build with `PREFIX=/usr` (see `PKGBUILD`) and install to `/usr/bin/orbit-status`. When wiring up autostart in your sway config, point `exec` at the actual location — `command -v orbit-status` tells you where it landed. See the *Autostarting* section in [README.md](./README.md).
+
 ### Workspace Cleanup
 
 To wipe out temporary object files and the generated protocol stubs before a fresh build:
@@ -64,7 +66,7 @@ make clean
 * **`bar.cpp` / `bar.hpp`** - Bar rendering (workspaces, clock, pills, power buttons) and clickable-region tracking.
 * **`lua_plugin.cpp`** - Type-safe C++ wrapper for initializing and executing isolated Lua plugin states.
 * **`sway_ipc.cpp`** - Minimal Sway/i3 IPC client (workspaces + focused window) with a small JSON parser.
-* **`sni_tray.cpp`** - StatusNotifierItem/StatusNotifierWatcher system tray over DBus.
+* **`sni_tray.cpp`** - StatusNotifierItem/StatusNotifierWatcher system tray over DBus. Owns the watcher name with takeover/retry for stale instances, and falls back to host mode (registering against another app's watcher and syncing its item list) when a shell/panel owns the name.
 * **`volume-sni.cpp`** - Standalone Wayland-native volume control that registers as a StatusNotifierItem (left-click toggles mute, scroll changes volume via `pactl`). Built and installed alongside `orbit-status` as `volume-sni`. `orbit-status` autostarts it once the SNI watcher is owned, and volume-sni re-registers if the watcher appears or restarts later; a single-instance DBus name lock prevents duplicate tray icons if it is also started from the session config.
 * **`config.hpp`** - Simple `key = value` config parser.
 * **`plugins/`** - Bundled `.lua` layout modules (e.g., `cpu.lua`, `mem.lua`) that feed string outputs to the bar pills.

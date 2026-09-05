@@ -2,6 +2,7 @@
 #define SNI_TRAY_HPP
 
 #include <cairo.h>
+#include <ctime>
 #include <dbus/dbus.h>
 
 #define SNI_MAX_ITEMS 16
@@ -44,7 +45,9 @@ struct SniTray {
     DBusConnection *conn = nullptr;
     bool watcher_owned = false;
     bool host_registered = false;
-    int ownership_retries = 0;  // retry counter for (re)acquiring the watcher name
+    int ownership_retries = 0;    // 0 = failure not yet logged, 1 = logged
+    time_t last_owner_retry = 0;  // time-based rate limiter for name retries
+    time_t last_host_sync = 0;    // time-based rate limiter for host-mode syncs
 
     SniItem items[SNI_MAX_ITEMS];
     int n_items = 0;

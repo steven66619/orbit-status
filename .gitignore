@@ -1,4 +1,5 @@
 *.o
+build/
 orbit-status
 volume-sni
 wlr-layer-shell-unstable-v1-client.c

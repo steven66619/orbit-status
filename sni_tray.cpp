@@ -5,6 +5,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <dirent.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -217,16 +218,32 @@ static cairo_surface_t *surface_from_pixmap(const unsigned char *data,
 
 static DBusHandlerResult sni_filter(DBusConnection *conn, DBusMessage *msg, void *data);
 
+// Flush any outbound messages that dbus_connection_send queued without
+// writing. libdbus only guarantees a socket write from
+// dbus_connection_read_write()/..._dispatch; if the host event loop never
+// runs those while we are waiting for a reply (it only wakes on POLLIN), the
+// first request could sit in the outbound queue and every later fetch stage
+// would time out. Call this right after sends on the request paths.
+static void drain_dbus(DBusConnection *conn) {
+    if (conn) dbus_connection_read_write(conn, 0);
+}
+
 static void emit_item_registered(SniTray *tray, const char *service) {
+    // Watcher-role signals are only meaningful while we actually own the
+    // watcher name; emitting them in host mode would spoof another app's
+    // identity. Item tracking still happens (on_change fires in add/remove).
+    if (!tray->watcher_owned) return;
     DBusMessage *sig = dbus_message_new_signal(SNI_WATCHER_PATH,
         SNI_WATCHER_IFACE, "StatusNotifierItemRegistered");
     if (!sig) return;
     dbus_message_append_args(sig, DBUS_TYPE_STRING, &service, DBUS_TYPE_INVALID);
     dbus_connection_send(tray->conn, sig, nullptr);
     dbus_message_unref(sig);
+    drain_dbus(tray->conn);
 }
 
 static void emit_item_unregistered(SniTray *tray, const char *service) {
+    if (!tray->watcher_owned) return;
     DBusMessage *sig = dbus_message_new_signal(SNI_WATCHER_PATH,
         SNI_WATCHER_IFACE, "StatusNotifierItemUnregistered");
     if (!sig) return;
@@ -236,6 +253,7 @@ static void emit_item_unregistered(SniTray *tray, const char *service) {
 }
 
 static void emit_host_registered(SniTray *tray) {
+    if (!tray->watcher_owned) return;
     DBusMessage *sig = dbus_message_new_signal(SNI_WATCHER_PATH,
         SNI_WATCHER_IFACE, "StatusNotifierHostRegistered");
     if (!sig) return;
@@ -244,6 +262,7 @@ static void emit_host_registered(SniTray *tray) {
 }
 
 static void emit_properties_changed(SniTray *tray) {
+    if (!tray->watcher_owned) return;
     DBusMessage *sig = dbus_message_new_signal(SNI_WATCHER_PATH,
         PROPS_IFACE, "PropertiesChanged");
     if (!sig) return;
@@ -284,6 +303,7 @@ static bool start_string_prop(SniTray *tray, SniItem *item, const char *prop) {
     dbus_message_unref(call);
     if (!pc) return false;
     item->pending = pc;
+    drain_dbus(tray->conn);
     return true;
 }
 
@@ -307,6 +327,7 @@ static bool start_icon_pixmap(SniTray *tray, SniItem *item) {
     dbus_message_unref(call);
     if (!pc) return false;
     item->pending = pc;
+    drain_dbus(tray->conn);
     return true;
 }
 
@@ -511,6 +532,21 @@ static SniItem *find_item(SniTray *tray, const char *service) {
     return nullptr;
 }
 
+// Find an item for an incoming item-signal sender. Some applications emit
+// their New*/status signals from a well-known bus name while they registered
+// under their unique name (or the other way around), so fall back to matching
+// the signal's object path when the sender alone does not resolve.
+static SniItem *find_item_flexible(SniTray *tray, const char *sender,
+                                   const char *sig_path) {
+    if (!sender) return nullptr;
+    SniItem *item = find_item(tray, sender);
+    if (item || !sig_path) return item;
+    for (int i = 0; i < tray->n_items; i++)
+        if (strcmp(tray->items[i].object_path, sig_path) == 0)
+            return &tray->items[i];
+    return nullptr;
+}
+
 static void remove_item(SniTray *tray, int idx) {
     if (idx < 0 || idx >= tray->n_items) return;
     SniItem *item = &tray->items[idx];
@@ -539,6 +575,58 @@ static void add_item(SniTray *tray, const char *service, const char *object_path
     item_fetch_props(tray, item);
     emit_item_registered(tray, service);
     if (tray->on_change) tray->on_change(tray->userdata);
+}
+
+// Host mode: another process owns the watcher name. Ask it for the items it
+// already tracks (RegisteredStatusNotifierItems) so icons that registered
+// before we came up still appear. The reply is handled in the message filter
+// (handle_item_sync_reply); a timeout/empty list just means no items yet.
+static void request_watcher_item_sync(SniTray *tray) {
+    if (!tray->conn) return;
+    DBusMessage *call = dbus_message_new_method_call(SNI_WATCHER_NAME,
+        SNI_WATCHER_PATH, PROPS_IFACE, "Get");
+    if (!call) return;
+    const char *iface = SNI_WATCHER_IFACE;
+    const char *prop = "RegisteredStatusNotifierItems";
+    dbus_message_append_args(call,
+        DBUS_TYPE_STRING, &iface,
+        DBUS_TYPE_STRING, &prop,
+        DBUS_TYPE_INVALID);
+    dbus_connection_send(tray->conn, call, nullptr);
+    dbus_message_unref(call);
+}
+
+// Host mode: subscribe to the remote watcher's registration signals so we
+// learn about items that appear (or disappear) later.
+static void watch_remote_watcher_signals(SniTray *tray) {
+    if (!tray->conn) return;
+    DBusMessage *match = dbus_message_new_method_call(DBUS_SERVICE_DBUS,
+        DBUS_PATH_DBUS, DBUS_IFACE, "AddMatch");
+    if (!match) return;
+    const char *rule = "type='signal',interface='org.kde.StatusNotifierWatcher'";
+    dbus_message_append_args(match, DBUS_TYPE_STRING, &rule, DBUS_TYPE_INVALID);
+    dbus_connection_send(tray->conn, match, nullptr);
+    dbus_message_unref(match);
+}
+
+// Host mode: adopt every service string in a RegisteredStatusNotifierItems
+// reply. Unique-name services (":1.42") carry their item at
+// /StatusNotifierItem; well-known-name services commonly place the item at
+// their own bus name used as an object path.
+static void handle_item_sync_reply(SniTray *tray, DBusMessage *reply) {
+    DBusMessageIter it, var, arr;
+    dbus_message_iter_init(reply, &it);
+    if (dbus_message_iter_get_arg_type(&it) != DBUS_TYPE_VARIANT) return;
+    dbus_message_iter_recurse(&it, &var);
+    if (dbus_message_iter_get_arg_type(&var) != DBUS_TYPE_ARRAY) return;
+    dbus_message_iter_recurse(&var, &arr);
+    while (dbus_message_iter_get_arg_type(&arr) == DBUS_TYPE_STRING) {
+        const char *svc;
+        dbus_message_iter_get_basic(&arr, &svc);
+        if (svc && svc[0] && !find_item(tray, svc))
+            add_item(tray, svc, svc[0] == ':' ? "/StatusNotifierItem" : svc);
+        dbus_message_iter_next(&arr);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -706,13 +794,61 @@ static DBusHandlerResult sni_filter(DBusConnection *conn, DBusMessage *msg, void
                     }
                 }
             }
+
+            // Track the watcher name itself. When it moves to another
+            // process while we are in host mode (a panel took over, or the
+            // squatter we could not replace restarted), re-sync our item
+            // list with the new watcher on the next dispatch tick.
+            if (strcmp(name, SNI_WATCHER_NAME) == 0 &&
+                new_owner && new_owner[0] != '\0' && !tray->watcher_owned) {
+                const char *us = dbus_bus_get_unique_name(tray->conn);
+                if (!us || strcmp(new_owner, us) != 0)
+                    tray->last_host_sync = 0;
+            }
+            return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+        }
+
+        // Watcher signals from a remote watcher (host mode): keep our item
+        // list in sync with items registering/unregistering over there.
+        if (!tray->watcher_owned && iface &&
+            strcmp(iface, SNI_WATCHER_IFACE) == 0) {
+            if (member && strcmp(member, "StatusNotifierItemRegistered") == 0) {
+                DBusMessageIter sit;
+                dbus_message_iter_init(msg, &sit);
+                if (dbus_message_iter_get_arg_type(&sit) == DBUS_TYPE_STRING) {
+                    const char *svc;
+                    dbus_message_iter_get_basic(&sit, &svc);
+                    if (svc && svc[0] && !find_item(tray, svc)) {
+                        // Unique-name services live at /StatusNotifierItem;
+                        // well-known-name services often carry the item at
+                        // their own path, so try the service as a path first.
+                        add_item(tray, svc,
+                                 svc[0] == ':' ? "/StatusNotifierItem" : svc);
+                    }
+                }
+            } else if (member && strcmp(member, "StatusNotifierItemUnregistered") == 0) {
+                DBusMessageIter sit;
+                dbus_message_iter_init(msg, &sit);
+                if (dbus_message_iter_get_arg_type(&sit) == DBUS_TYPE_STRING) {
+                    const char *svc;
+                    dbus_message_iter_get_basic(&sit, &svc);
+                    if (svc) {
+                        for (int i = tray_item_count(tray) - 1; i >= 0; i--) {
+                            if (strcmp(tray->items[i].service, svc) == 0) {
+                                remove_item(tray, i);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
         }
 
         // Item signals: refresh icon / tooltip.
         if (iface && strcmp(iface, SNI_ITEM_IFACE) == 0) {
             const char *sender = dbus_message_get_sender(msg);
-            SniItem *item = sender ? find_item(tray, sender) : nullptr;
+            SniItem *item = find_item_flexible(tray, sender, dbus_message_get_path(msg));
             if (item) {
                 if (member && (strcmp(member, "NewIcon") == 0 ||
                                strcmp(member, "NewAttentionIcon") == 0 ||
@@ -733,6 +869,19 @@ static DBusHandlerResult sni_filter(DBusConnection *conn, DBusMessage *msg, void
             }
             return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
         }
+
+        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    }
+
+    // Replies to our host-mode item-list sync. These are sent fire-and-forget
+    // (no DBusPendingCall), so the message filter is the only place they can
+    // be handled. DBus method returns carry no interface/member of their own,
+    // so validate the payload shape inside handle_item_sync_reply (a variant
+    // wrapping an array of strings); anything else (e.g. the empty
+    // RegisterStatusNotifierHost ack) fails validation harmlessly.
+    if (dbus_message_get_type(msg) == DBUS_MESSAGE_TYPE_METHOD_RETURN &&
+        !tray->watcher_owned) {
+        handle_item_sync_reply(tray, msg);
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
     }
 
@@ -825,14 +974,21 @@ int sni_tray_init(SniTray *tray, int icon_size,
     }
     dbus_connection_set_exit_on_disconnect(tray->conn, false);
 
-    // Own the watcher well-known name.
+    // Own the watcher well-known name. REPLACE_EXISTING makes us take over
+    // from any squatter (another panel/shell, or a bar instance that died
+    // before the bus released the name) — otherwise tray items register with
+    // that other app and orbit-status would show no icons for the session.
+    // ALLOW_REPLACEMENT lets a freshly started bar take the name from a
+    // stale/hung previous orbit-status immediately instead of waiting for it
+    // to exit; REPLACE_EXISTING performs that takeover in the same request.
     int ret = dbus_bus_request_name(tray->conn, SNI_WATCHER_NAME,
-        DBUS_NAME_FLAG_DO_NOT_QUEUE, &err);
+        DBUS_NAME_FLAG_DO_NOT_QUEUE | DBUS_NAME_FLAG_ALLOW_REPLACEMENT |
+        DBUS_NAME_FLAG_REPLACE_EXISTING, &err);
     if (ret == DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
         tray->watcher_owned = true;
     } else {
-        fprintf(stderr, "orbit-status: tray: could not own %s (another watcher exists)\n",
-                SNI_WATCHER_NAME);
+        fprintf(stderr, "orbit-status: tray: could not own %s (reply=%d, %s); retrying as host\n",
+                SNI_WATCHER_NAME, ret, err.message ? err.message : "unknown");
         dbus_error_free(&err);
         // Still register as a host so items can find us via the existing watcher.
     }
@@ -877,6 +1033,14 @@ int sni_tray_init(SniTray *tray, int icon_size,
             dbus_message_unref(host);
         }
         tray->host_registered = true;
+        // Follow the remote watcher's registration signals and pull the item
+        // list it already knows about, so icons that registered before we
+        // came up still appear (spec-compliant watchers also replay
+        // StatusNotifierItemRegistered on host signup; this covers the ones
+        // that don't).
+        watch_remote_watcher_signals(tray);
+        request_watcher_item_sync(tray);
+        drain_dbus(tray->conn);
     }
 
     // Flush pending messages.
@@ -892,23 +1056,38 @@ int sni_tray_get_fd(SniTray *tray) {
     return fd;
 }
 
-// (Re)acquire the watcher well-known name. If the initial request in
-// sni_tray_init lost a race with the previous owner's teardown (e.g. the bar
-// was restarted immediately after being killed), the tray would otherwise stay
-// name-less forever, showing no icons for the rest of the session. Called from
-// sni_tray_dispatch whenever we detect we do not own the name yet.
+// (Re)acquire the watcher well-known name. Two failure modes are handled:
+//
+//  1. A stale bar instance died without releasing the name (DBus releases it
+//     asynchronously), or the previous bar was killed and restarted within
+//     the same second.
+//  2. Another panel/shell (plasmashell, xfce4-panel, lxqt-panel, ...) owns
+//     the name. Items then register with that app and orbit-status shows no
+//     icons at all for the whole session.
+//
+// In both cases we take the name with DBUS_NAME_FLAG_REPLACE_EXISTING, which
+// makes orbit-status the authoritative watcher (and makes the previous owner
+// exit if it cannot cope). Retry is rate-limited and driven from
+// sni_tray_dispatch so we recover no matter when the conflict appears.
 static void try_acquire_watcher(SniTray *tray) {
     if (!tray->conn || tray->watcher_owned) return;
     DBusError err;
     dbus_error_init(&err);
     int ret = dbus_bus_request_name(tray->conn, SNI_WATCHER_NAME,
-        DBUS_NAME_FLAG_DO_NOT_QUEUE, &err);
+        DBUS_NAME_FLAG_ALLOW_REPLACEMENT | DBUS_NAME_FLAG_REPLACE_EXISTING, &err);
     if (ret == DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
         tray->watcher_owned = true;
         tray->host_registered = true;
         emit_host_registered(tray);
         emit_properties_changed(tray);
         fprintf(stderr, "orbit-status: tray: acquired watcher name\n");
+    } else if (tray->ownership_retries == 0) {
+        // Log once, not on every retry: a permanent owner (a desktop shell
+        // that never sets AllowReplacement) is normal — we run as host
+        // against it and still show the icons.
+        fprintf(stderr, "orbit-status: tray: %s owned by another app (reply=%d); running as host\n",
+                SNI_WATCHER_NAME, ret);
+        tray->ownership_retries = 1;
     }
     dbus_error_free(&err);
 }
@@ -920,10 +1099,30 @@ void sni_tray_dispatch(SniTray *tray) {
     dbus_connection_read_write_dispatch(tray->conn, 0);
 
     // If we lost the initial watcher-name request race, retry periodically
-    // (rate-limited). The NameOwnerChanged signal wakes this up right when the
-    // previous owner's name is actually released.
-    if (!tray->watcher_owned && tray->ownership_retries++ % 50 == 0)
-        try_acquire_watcher(tray);
+    // (time-based: the main loop dispatches on every iteration, which can be
+    // many times per second). The NameOwnerChanged signal also wakes this up
+    // right when the previous owner's name is actually released.
+    if (!tray->watcher_owned) {
+        time_t now = time(nullptr);
+        if (now != tray->last_owner_retry) {
+            tray->last_owner_retry = now;
+            tray->ownership_retries++;
+            try_acquire_watcher(tray);
+        }
+    }
+
+    // Host mode (another watcher owns the name): periodically re-pull its
+    // item list so items that registered without a replayed signal still
+    // appear. Time-based, max once per second; the remote watcher's signals
+    // and the per-reply adoption cover everything in between.
+    if (!tray->watcher_owned) {
+        time_t now = time(nullptr);
+        if (now != tray->last_host_sync) {
+            tray->last_host_sync = now;
+            request_watcher_item_sync(tray);
+            drain_dbus(tray->conn);
+        }
+    }
 
     // Advance any completed async property fetches. This must run after
     // dispatch so that replies are available, and it must not re-enter

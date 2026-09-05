@@ -1707,8 +1707,10 @@ static void pointer_button(void *data, wl_pointer *pointer,
         net_menu_destroy(ws);
 
     // Tray handles left / middle / right clicks on its icons.
-    if (ws->tray.conn && sni_tray_handle_click(&ws->tray, x, y, button))
+    if (ws->tray.conn && sni_tray_handle_click(&ws->tray, x, y, button)) {
+        sni_tray_dispatch(&ws->tray);  // flush the Activate/... call immediately
         return;
+    }
 
     /* All remaining clicks are left button only. */
     if (button != 0x110) return; /* BTN_LEFT */
@@ -1782,8 +1784,10 @@ static void pointer_axis(void *data, wl_pointer *pointer,
     }
 
     // Tray handles scroll over its icons (e.g. volume control).
-    if (ws->tray.conn && sni_tray_handle_scroll(&ws->tray, x, y, wl_fixed_to_int(value)))
+    if (ws->tray.conn && sni_tray_handle_scroll(&ws->tray, x, y, wl_fixed_to_int(value))) {
+        sni_tray_dispatch(&ws->tray);  // flush the Scroll call immediately
         return;
+    }
 
     for (int i = 0; i < ws->bar->n_clickables; i++) {
         Clickable *c = &ws->bar->clickables[i];
@@ -2197,7 +2201,15 @@ int main() {
             }
         }
 
-        if (tray_fd >= 0 && (fds[3].revents & POLLIN)) {
+        // Drive the tray every iteration, not just on POLLIN: outgoing
+        // DBus messages are only written by
+        // dbus_connection_read_write()/..._dispatch, and incoming messages
+        // can sit in libdbus's internal buffer after a single big read. With
+        // a POLLIN-only call the tray's own property fetches stalled forever
+        // (no icons), and NameOwnerChanged bursts from watcher takeover were
+        // never drained. read_write_dispatch with a 0 timeout is a no-op when
+        // there is nothing to do.
+        if (tray_fd >= 0) {
             sni_tray_dispatch(&ws.tray);
         }
 
