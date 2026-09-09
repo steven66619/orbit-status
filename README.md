@@ -27,6 +27,24 @@ sudo pacman -Sy orbit-status orbiter realspeed-cli
 (pacman's default is `Required`); signatures are verified automatically once
 CI signing is configured.
 
+## Release codenames
+
+Releases use codenames instead of version numbers (like Ubuntu). Pick the
+next unused name in alphabetical order so pacman treats it as an upgrade,
+then tag the source repo:
+
+```sh
+git tag nebula && git push origin nebula
+```
+
+The `bump-versions` workflow picks it up and rebuilds the package.
+
+| Package | Theme | Used | Next up |
+|---|---|---|---|
+| `orbit-status` | space/astronomy | aurora | nebula, pulsar, quasar, supernova, eclipse, zenith, comet, cosmos, stellar, lunar, solar, galactic, celestial, astral, nova, meteor, gravity, horizon, orbit |
+| `orbiter` | space exploration | apollo | columbia, discovery, endeavor, enterprise, gemini, mercury, odyssey, pathfinder, pioneer, ranger, sputnik, voyager, challenger, atlantis |
+| `realspeed-cli` | speed | blitz | dash, hyperdrive, lightspeed, ludicrous, mach, rocket, sprint, velocity, warp, zephyr, zoom, bolt, flash, jet, sonic, turbo |
+
 ## Debian/Ubuntu
 
 ```sh
