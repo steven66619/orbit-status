@@ -1,6 +1,7 @@
 # Maintainer: steven66619 <steven4x4@gmail.com>
+# Releases use codenames (alphabetical, so pacman treats them as upgrades).
 pkgname=orbiter
-pkgver=1.0.5
+pkgver=apollo
 pkgrel=1
 pkgdesc="Wayland application launcher with search and app icons"
 arch=('x86_64')
@@ -10,7 +11,7 @@ depends=('wayland' 'cairo' 'pango' 'librsvg' 'libxkbcommon')
 makedepends=('cmake' 'wayland-protocols' 'pkg-config')
 # Source from release tags; the bump-versions workflow keeps pkgver in
 # sync with the latest tag on the orbiter repo.
-source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbiter/archive/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbiter/archive/$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 build() {

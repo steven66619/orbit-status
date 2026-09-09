@@ -1,6 +1,7 @@
 # Maintainer: steven66619 <steven4x4@gmail.com>
+# Releases use codenames (alphabetical, so pacman treats them as upgrades).
 pkgname=realspeed-cli
-pkgver=1.0.0
+pkgver=blitz
 pkgrel=1
 pkgdesc="SamKnows-based internet speed test CLI"
 arch=('x86_64')
@@ -10,7 +11,7 @@ depends=()
 makedepends=('go')
 # Source from release tags; the bump-versions workflow keeps pkgver in
 # sync with the latest tag on the realspeed-cli repo.
-source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/realspeed-cli/archive/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/realspeed-cli/archive/$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 build() {
