@@ -1,7 +1,7 @@
 # Maintainer: steven66619 <steven4x4@gmail.com>
 # Releases use codenames (alphabetical, so pacman treats them as upgrades).
 pkgname=orbiter
-pkgver=1.0.5
+pkgver=apollo
 pkgrel=1
 pkgdesc="Wayland application launcher with search and app icons"
 arch=('x86_64')
