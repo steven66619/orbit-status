@@ -29,8 +29,12 @@ CI signing is configured.
 
 ## Release codenames
 
-Each version gets its own codename (like Ubuntu's "24.04 LTS *Noble Numbat*").
-Tag the source repo with `v<version>-<codename>`:
+Codenames are reserved for **major releases** (like Ubuntu's "24.04 LTS
+*Noble Numbat*"); minor/patch releases ship with a plain version number. The
+first lineup keeps its codenames: 1.7 "Aurora", 1.8 "Nebula", 1.0.5 "Apollo",
+1.1.0 "Columbia", 1.0.0 "Blitz".
+
+Tag a major release with `v<version>-<codename>`:
 
 ```sh
 git tag v1.8-nebula && git push origin v1.8-nebula
