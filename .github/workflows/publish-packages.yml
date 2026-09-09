@@ -3,7 +3,10 @@ name: Deploy package repo to GitHub Pages
 on:
   push:
     branches: [main, personal]
-    paths: ['repo/**']
+    paths:
+      - 'repo/**'
+      - 'PKGBUILD'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 jobs:
@@ -23,6 +26,42 @@ jobs:
           name: void-xbps
           path: repo/void/x86_64/
 
+  build-arch:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --needed --noconfirm base-devel pacman-contrib \
+            wayland wayland-protocols cairo pango libxkbcommon glib2 \
+            librsvg dbus libpulse lua
+
+      - name: Build package and regenerate Arch repo metadata
+        run: |
+          # makepkg refuses to run as root; build as a non-root user
+          useradd -m builder
+          chown -R builder:builder .
+          su builder -c "cd $PWD && makepkg -f --noconfirm"
+          mkdir -p repo/arch/x86_64
+          cp orbit-status-*.pkg.tar.zst repo/arch/x86_64/
+          # Regenerate metadata from scratch so old versions don't linger
+          rm -f repo/arch/x86_64/orbit-status.db* repo/arch/x86_64/orbit-status.files*
+          chmod +x repo/update-repo.sh
+          ./repo/update-repo.sh arch
+          # repo-add creates .db.tar.zst/.files.tar.zst (and symlinks for the
+          # plain names); publish real files so GitHub Pages serves them
+          cp -f repo/arch/x86_64/orbit-status.db.tar.zst repo/arch/x86_64/orbit-status.db
+          cp -f repo/arch/x86_64/orbit-status.files.tar.zst repo/arch/x86_64/orbit-status.files
+
+      - name: Upload Arch repo artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-repo
+          path: repo/arch/
+
   deploy:
     runs-on: ubuntu-latest
     permissions:
@@ -36,6 +75,13 @@ jobs:
         with:
           name: void-xbps
           path: repo/void/x86_64/
+
+      - name: Download Arch repo artifact
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: arch-repo
+          path: repo/arch/
 
       - name: Install repo tools
         run: |
