@@ -4,9 +4,9 @@
 # pkgver carries the codename (1.0.5_apollo) so pacman shows it; _ver is the
 # numeric version used for the source tarball URL.
 pkgname=orbiter
-pkgver=1.0.5_apollo
-_ver=1.0.5
-_codename=apollo
+pkgver=1.1.0_columbia
+_ver=1.1.0
+_codename=columbia
 pkgrel=1
 pkgdesc="Wayland application launcher with search and app icons"
 arch=('x86_64')
