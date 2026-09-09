@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -44,6 +45,9 @@ jobs:
             git add packages/
             git commit -m "chore: bump package versions to latest releases"
             git push
+            # Pushes made with GITHUB_TOKEN do not trigger other workflows,
+            # so explicitly kick off the publish workflow.
+            gh workflow run "Deploy package repo to GitHub Pages" --ref main
           else
             echo "No version bumps needed"
           fi
