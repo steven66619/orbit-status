@@ -46,6 +46,10 @@ jobs:
           chown -R builder:builder .
           mkdir -p repo/arch/x86_64
           for pkg in packages/*/; do
+            if [ -f "$pkg/LOCAL-ONLY" ]; then
+              echo "Skipping $pkg (LOCAL-ONLY: sources a private repo, built and committed locally)"
+              continue
+            fi
             su builder -c "cd $PWD/$pkg && makepkg -f --noconfirm"
             # Drop the -debug package makepkg also produces
             rm -f "$pkg"/*-debug-*.pkg.tar.zst
@@ -89,6 +93,16 @@ jobs:
           name: arch-repo
           path: repo/arch/
 
+      - name: Fetch LOCAL-ONLY packages from releases (too big for git)
+        run: |
+          # vmtv is built locally from a private repo and attached to a
+          # release (packages >100MB cannot live in git). Fetch it so the
+          # db regeneration below lists it; it is removed again before
+          # publishing, and pacman pulls the file from the release URL.
+          mkdir -p repo/arch/x86_64
+          curl -fsSL -o repo/arch/x86_64/vmtv-1.0.0-1-x86_64.pkg.tar.zst \
+            https://github.com/steven66619/orbit-status/releases/download/vmtv-v1.0.0/vmtv-1.0.0-1-x86_64.pkg.tar.zst
+
       - name: Install repo tools
         run: |
           sudo apt-get update -qq
@@ -116,6 +130,10 @@ jobs:
             gpg --detach-sign -o "${void_repodata}.sig" "$void_repodata" 2>/dev/null
             echo "Void repodata signed: ${void_repodata}.sig"
           fi
+          # The >100MB vmtv package cannot be pushed to gh-pages (git blob
+          # limit); the db entry is enough - pacman fetches the file from
+          # the release via the second Server line in pacman.conf.
+          rm -f repo/arch/x86_64/vmtv-*.pkg.tar.zst
         env:
           GPG_KEY: ${{ secrets.GPG_KEY }}
 

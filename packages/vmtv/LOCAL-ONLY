@@ -1,0 +1,3 @@
+CI cannot build this package: PKGBUILD sources the private
+steven66619/VMTV repo over SSH. Built and committed locally by the
+maintainer; the workflow skips directories containing this marker.

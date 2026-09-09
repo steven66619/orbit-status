@@ -1,0 +1,75 @@
+# Maintainer: steven66619 <70050577+steven66619@users.noreply.github.com>
+# Unofficial Virgin TV Go desktop client: castLabs Electron (Widevine) +
+# Widevine CDM from an installed Google Chrome, built into one package.
+#
+# LOCAL-ONLY package: sources from the PRIVATE steven66619/VMTV repo over
+# SSH, so CI cannot build it (marker file LOCAL-ONLY makes the workflow
+# skip it). The built package is committed to repo/arch/x86_64/ where the
+# db regeneration glob picks it up like any other package.
+pkgname=vmtv
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='Unofficial Virgin TV Go desktop client (Electron + Widevine DRM)'
+arch=('x86_64')
+url='https://github.com/steven66619/VMTV'
+license=('MIT')
+depends=('alsa-lib' 'gtk3' 'nss' 'libnotify' 'libxss' 'libxtst' 'libsecret' 'xdg-utils')
+makedepends=('git' 'nodejs' 'npm' 'unzip' 'curl')
+options=('!strip')
+_commit=eba378427fe3879751342e268ecbbc08aac64dd9
+source=("$pkgname::git+ssh://git@github.com/steven66619/VMTV.git#commit=$_commit")
+sha256sums=('SKIP')
+
+# castLabs Widevine-enabled Electron (wvcus), pinned by RESTORE.md
+_electron_url='https://github.com/castlabs/electron-releases/releases/download/v43.2.0+wvcus/electron-v43.2.0+wvcus-linux-x64.zip'
+
+prepare() {
+  cd "$pkgname"
+
+  npm ci
+
+  # Replace vanilla Electron with the castLabs Widevine build
+  curl -fsSL -o "$srcdir/electron-wvcus.zip" "$_electron_url"
+  rm -rf node_modules/electron/dist
+  mkdir -p node_modules/electron/dist
+  unzip -q "$srcdir/electron-wvcus.zip" -d node_modules/electron/dist
+
+  # Bundle the Widevine CDM from an installed Google Chrome
+  local cdm=/opt/google/chrome/WidevineCdm
+  if [ -d "$cdm" ]; then
+    cp -r "$cdm" node_modules/electron/dist/WidevineCdm
+  else
+    echo 'WARNING: Google Chrome WidevineCdm not found; package will lack CDM (DRM may still resolve via user config)' >&2
+  fi
+}
+
+build() {
+  cd "$pkgname"
+  npx electron-vite build
+  npx electron-builder --linux --dir
+}
+
+package() {
+  cd "$pkgname"
+  local appdir="$pkgdir/opt/vmtv"
+
+  install -d "$appdir" "$pkgdir/usr/bin"
+  cp -a release/linux-unpacked/. "$appdir/"
+  chmod +x "$appdir/vmtv"
+  ln -s /opt/vmtv/vmtv "$pkgdir/usr/bin/vmtv"
+
+  install -Dm644 build/icon.png \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/vmtv.png"
+
+  install -Dm644 /dev/null "$pkgdir/usr/share/applications/vmtv.desktop"
+  cat > "$pkgdir/usr/share/applications/vmtv.desktop" << 'EOF'
+[Desktop Entry]
+Name=Virgin TV Go
+Comment=Unofficial Virgin TV Go desktop client
+Exec=/opt/vmtv/vmtv --no-sandbox
+Icon=vmtv
+Type=Application
+Categories=AudioVideo;TV;
+StartupWMClass=Virgin TV Go
+EOF
+}
