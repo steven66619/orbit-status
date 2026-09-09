@@ -33,8 +33,7 @@ jobs:
             # Latest release = tag with the highest version number, in the
             # format v<version>-<codename> (e.g. v1.8-nebula). Legacy plain
             # numeric tags (v1.7) sort lower than their codename twin.
-            latest_tag=$(curl -fsSL "https://api.github.com/repos/$repo/tags?per_page=100" \
-              | jq -r '.[].name' \
+            latest_tag=$(gh api "repos/$repo/tags?per_page=100" --jq '.[].name' \
               | grep -E '^v[0-9]' \
               | sort -V \
               | tail -1)
