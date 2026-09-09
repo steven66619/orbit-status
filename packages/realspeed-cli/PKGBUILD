@@ -1,7 +1,9 @@
 # Maintainer: steven66619 <steven4x4@gmail.com>
-# Releases use codenames (alphabetical, so pacman treats them as upgrades).
+# Each version gets its own codename (e.g. 1.0.0 "Blitz"); the bump-versions
+# workflow keeps pkgver/_codename in sync with the latest v<ver>-<codename> tag.
 pkgname=realspeed-cli
-pkgver=blitz
+pkgver=1.0.0
+_codename=blitz
 pkgrel=1
 pkgdesc="SamKnows-based internet speed test CLI"
 arch=('x86_64')
@@ -9,17 +11,15 @@ url="https://github.com/steven66619/realspeed-cli"
 license=('MIT')
 depends=()
 makedepends=('go')
-# Source from release tags; the bump-versions workflow keeps pkgver in
-# sync with the latest tag on the realspeed-cli repo.
-source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/realspeed-cli/archive/$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/realspeed-cli/archive/v$pkgver-$_codename.tar.gz")
 sha256sums=('SKIP')
 
 build() {
-  cd "$srcdir/$pkgname-$pkgver"
+  cd "$srcdir/$pkgname-$pkgver-$_codename"
   make
 }
 
 package() {
-  cd "$srcdir/$pkgname-$pkgver"
+  cd "$srcdir/$pkgname-$pkgver-$_codename"
   make PREFIX=/usr DESTDIR="$pkgdir" install
 }

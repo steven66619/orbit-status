@@ -1,7 +1,9 @@
 # Maintainer: steven66619 <steven4x4@gmail.com>
-# Releases use codenames (alphabetical, so pacman treats them as upgrades).
+# Each version gets its own codename (e.g. 1.7 "Aurora"); the bump-versions
+# workflow keeps pkgver/_codename in sync with the latest v<ver>-<codename> tag.
 pkgname=orbit-status
-pkgver=aurora
+pkgver=1.7
+_codename=aurora
 pkgrel=1
 pkgdesc="Lightweight Wayland status bar with Lua plugin support"
 arch=('x86_64' 'aarch64')
@@ -9,15 +11,15 @@ url="https://github.com/steven66619/orbit-status"
 license=('MIT')
 depends=('wayland' 'cairo' 'pango' 'glib2' 'lua54' 'librsvg' 'dbus' 'libpulse')
 makedepends=('wayland-protocols' 'lua')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbit-status/archive/$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbit-status/archive/v$pkgver-$_codename.tar.gz")
 sha256sums=('SKIP')
 
 build() {
-  cd "$srcdir/$pkgname-$pkgver"
+  cd "$srcdir/$pkgname-$pkgver-$_codename"
   make PREFIX=/usr
 }
 
 package() {
-  cd "$srcdir/$pkgname-$pkgver"
+  cd "$srcdir/$pkgname-$pkgver-$_codename"
   make PREFIX=/usr DESTDIR="$pkgdir" install
 }

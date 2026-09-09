@@ -30,19 +30,30 @@ jobs:
             repo="${repos[$pkg]}"
             pkgbuild="packages/$pkg/PKGBUILD"
             [ -f "$pkgbuild" ] || continue
-            # Latest release = alphabetically-last codename tag. Numeric tags
-            # (v1.7 etc.) are legacy and ignored; codenames are chosen in
-            # alphabetical order so the last one is the newest release.
-            latest=$(curl -fsSL "https://api.github.com/repos/$repo/tags?per_page=100" \
-              | jq -r '[.[].name | select(test("^v?[0-9]") | not)] | sort | last // empty')
-            [ -n "$latest" ] || { echo "No codename tags for $repo, skipping"; continue; }
-            current=$(sed -n 's/^pkgver=//p' "$pkgbuild")
-            if [ "$latest" != "$current" ]; then
-              sed -i "s/^pkgver=.*/pkgver=$latest/" "$pkgbuild"
-              echo "Bumped $pkg: $current -> $latest"
+            # Latest release = tag with the highest version number, in the
+            # format v<version>-<codename> (e.g. v1.8-nebula). Legacy plain
+            # numeric tags (v1.7) sort lower than their codename twin.
+            latest_tag=$(curl -fsSL "https://api.github.com/repos/$repo/tags?per_page=100" \
+              | jq -r '.[].name' \
+              | grep -E '^v[0-9]' \
+              | sort -V \
+              | tail -1)
+            [ -n "$latest_tag" ] || { echo "No version tags for $repo, skipping"; continue; }
+            version=$(printf '%s' "$latest_tag" | sed 's/^v//; s/-.*//')
+            codename=$(printf '%s' "$latest_tag" | sed -n 's/^v[0-9.]*-//p')
+            if [ -z "$codename" ]; then
+              echo "Latest tag $latest_tag has no codename; skipping $pkg"
+              continue
+            fi
+            current_version=$(sed -n 's/^pkgver=//p' "$pkgbuild")
+            current_codename=$(sed -n 's/^_codename=//p' "$pkgbuild")
+            if [ "$version" != "$current_version" ] || [ "$codename" != "$current_codename" ]; then
+              sed -i "s/^pkgver=.*/pkgver=$version/" "$pkgbuild"
+              sed -i "s/^_codename=.*/_codename=$codename/" "$pkgbuild"
+              echo "Bumped $pkg: $current_version-$current_codename -> $version-$codename"
               changed=1
             else
-              echo "$pkg already at $latest"
+              echo "$pkg already at $version-$codename"
             fi
           done
           if [ "$changed" -eq 1 ]; then
