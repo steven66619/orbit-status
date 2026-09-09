@@ -1,8 +1,9 @@
 # Maintainer: steven66619 <steven4x4@gmail.com>
-# Each version gets its own codename (e.g. 1.8 "Nebula"); the bump-versions
-# workflow keeps pkgver/_codename in sync with the latest v<ver>-<codename> tag.
-# pkgver carries the codename (1.8_nebula) so pacman shows it; _ver is the
-# numeric version used for the source tarball URL.
+# Major releases get a codename (e.g. 1.8 "Nebula"); minor/bugfix releases are
+# version-only (e.g. 1.9). The bump-versions workflow keeps pkgver/_ver/_codename
+# in sync with the latest v<ver>[-<codename>] tag.
+# pkgver carries the codename when present (1.8_nebula) so pacman shows it;
+# _ver is the numeric version used for the source tarball URL.
 pkgname=orbit-status
 pkgver=1.8_nebula
 _ver=1.8
@@ -14,15 +15,23 @@ url="https://github.com/steven66619/orbit-status"
 license=('MIT')
 depends=('wayland' 'cairo' 'pango' 'glib2' 'lua54' 'librsvg' 'dbus' 'libpulse')
 makedepends=('wayland-protocols' 'lua')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbit-status/archive/v$_ver-$_codename.tar.gz")
+# Source tarball: v<ver>-<codename> for codename releases, v<ver> otherwise.
+if [ -n "$_codename" ]; then
+  _tag="v$_ver-$_codename"
+  _srcdir="$pkgname-$_ver-$_codename"
+else
+  _tag="v$_ver"
+  _srcdir="$pkgname-$_ver"
+fi
+source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbit-status/archive/$_tag.tar.gz")
 sha256sums=('SKIP')
 
 build() {
-  cd "$srcdir/$pkgname-$_ver-$_codename"
+  cd "$srcdir/$_srcdir"
   make PREFIX=/usr
 }
 
 package() {
-  cd "$srcdir/$pkgname-$_ver-$_codename"
+  cd "$srcdir/$_srcdir"
   make PREFIX=/usr DESTDIR="$pkgdir" install
 }

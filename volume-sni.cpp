@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <unistd.h>
 
 #define WATCHER_NAME "org.kde.StatusNotifierWatcher"
@@ -398,11 +399,25 @@ int main(void) {
     fprintf(stderr, "volume-sni: registered, volume=%d%% muted=%d\n",
             current_volume, current_muted);
 
-    // Main loop: dispatch DBus messages as they arrive.
+    // Main loop: dispatch DBus messages as they arrive, refreshing audio state
+    // periodically so external changes (media keys, pavucontrol, pactl) are
+    // reflected in the tray icon. NewIcon is only emitted when the state
+    // actually changed to avoid spamming the tray.
+    time_t last_refresh = time(nullptr);
     while (true) {
         if (!dbus_connection_read_write_dispatch(conn, 200)) {
             fprintf(stderr, "volume-sni: dbus connection lost\n");
             break;
+        }
+        time_t now = time(nullptr);
+        if (now - last_refresh >= 2) {
+            last_refresh = now;
+            int old_volume = current_volume;
+            bool old_muted = current_muted;
+            refresh_state();
+            if (current_volume != old_volume || current_muted != old_muted) {
+                emit_new_icon();
+            }
         }
     }
 
