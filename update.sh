@@ -1,23 +1,28 @@
 #!/bin/bash
-# update.sh — release a new version of an orbit-suite package with a codename.
+# update.sh — release a new version of an orbit-suite package.
 #
 # Usage:
-#   ./update.sh <codename>                      # release orbit-status (auto version)
-#   ./update.sh <package> <codename>            # release a specific package
-#   ./update.sh <package> <version> <codename>  # release with explicit version
+#   ./update.sh <codename>                      # release orbit-status (auto version, codename)
+#   ./update.sh <package> <codename>            # release a specific package (auto version, codename)
+#   ./update.sh <package> <version> <codename>  # release with explicit version + codename
+#   ./update.sh <package> <version>             # release with explicit version, NO codename
 #   ./update.sh rename <new-codename>           # rename latest orbit-status codename
 #   ./update.sh rename <package> <new-codename> # rename a specific package
+#
+# Codenames are reserved for major releases (Ubuntu-style). Minor/bugfix
+# releases are version-only: pass just <package> <version> (no codename).
 #
 # Examples:
 #   ./update.sh pulsar                          # orbit-status 1.9 "Pulsar"
 #   ./update.sh orbiter columbia                # orbiter 1.1.0 "Columbia"
 #   ./update.sh realspeed-cli 1.2.0 dash        # realspeed-cli 1.2.0 "Dash"
+#   ./update.sh orbit-status 1.9                # orbit-status 1.9 (no codename)
 #   ./update.sh rename aurora                   # rename latest orbit-status codename
 #
 # What it does (release):
 #   1. Determines the next version (auto minor bump, or explicit)
-#   2. Validates the codename (lowercase, unused)
-#   3. Creates + pushes the v<version>-<codename> tag on the source repo
+#   2. Validates the codename if given (lowercase, unused)
+#   3. Creates + pushes the v<version>[-<codename>] tag on the source repo
 #   4. Triggers the bump-versions workflow, which rebuilds + redeploys
 #      the package repo to GitHub Pages
 #
@@ -99,22 +104,36 @@ if [ "${1:-}" = "rename" ]; then
 fi
 
 # --- release mode: parse args --------------------------------------------------
+# Forms:
+#   1 arg  -> <codename>                    (orbit-status, auto version)
+#   2 args -> <package> <codename>          (auto version)
+#   2 args -> <package> <version>           (version-only, no codename)
+#   3 args -> <package> <version> <codename>
 case "$#" in
   1) pkg="orbit-status"; version=""; codename="$1" ;;
-  2) pkg="$1"; version=""; codename="$2" ;;
+  2)
+    pkg="$1"
+    if [[ "$2" =~ ^[0-9] ]]; then
+      version="$2"; codename=""          # version-only release
+    else
+      version=""; codename="$2"          # codename release, auto version
+    fi
+    ;;
   3) pkg="$1"; version="$2"; codename="$3" ;;
   *) die "Usage: $0 [package] [version] <codename>" ;;
 esac
 
 [ -n "${SOURCE_REPO[$pkg]:-}" ] || die "Unknown package '$pkg'. Known: ${!SOURCE_REPO[@]}"
-[[ "$codename" =~ ^[a-z][a-z0-9]*$ ]] || die "Codename must be lowercase alphanumeric (got '$codename')"
+if [ -n "$codename" ]; then
+  [[ "$codename" =~ ^[a-z][a-z0-9]*$ ]] || die "Codename must be lowercase alphanumeric (got '$codename')"
+fi
 
 # --- determine version ---------------------------------------------------------
 if [ -z "$version" ]; then
   current=$(curl -fsSL "https://raw.githubusercontent.com/$REPO_OWNER/$PKG_REPO/main/packages/$pkg/PKGBUILD" \
     | sed -n 's/^pkgver=//p')
   [ -n "$current" ] || die "Could not read current pkgver for $pkg"
-  # pkgver carries the codename (1.8_nebula); strip it for the numeric version.
+  # pkgver may carry the codename (1.8_nebula); strip it for the numeric version.
   current=${current%%_*}
   # auto minor bump: 1.7 -> 1.8, 1.0.5 -> 1.1.0
   IFS='.' read -r major minor patch <<< "$current"
@@ -126,16 +145,20 @@ if [ -z "$version" ]; then
   say "Auto version: $current -> $version"
 fi
 
-tag="v${version}-${codename}"
+if [ -n "$codename" ]; then
+  tag="v${version}-${codename}"
+else
+  tag="v${version}"
+fi
 src="${SOURCE_REPO[$pkg]}"
 
-# --- validate codename ---------------------------------------------------------
+# --- validate tag/codename -----------------------------------------------------
 existing=$(gh api "repos/$REPO_OWNER/$src/tags?per_page=100" --jq '.[].name' 2>/dev/null || true)
 if grep -qx "$tag" <<< "$existing"; then
   die "Tag $tag already exists on $REPO_OWNER/$src"
 fi
 # Catch the codename both as a bare tag and embedded in v<ver>-<codename> tags.
-if grep -qE "(^|-)${codename}$" <<< "$existing"; then
+if [ -n "$codename" ] && grep -qE "(^|-)${codename}$" <<< "$existing"; then
   die "Codename '$codename' already used on $REPO_OWNER/$src"
 fi
 
@@ -151,6 +174,6 @@ git -C "$TMP" push origin "$tag"
 say "Triggering '$WORKFLOW'"
 gh workflow run "$WORKFLOW" --repo "$REPO_OWNER/$PKG_REPO"
 
-say "Done! $pkg $version '$codename' tagged as $tag."
+say "Done! $pkg $version${codename:+ '$codename'} tagged as $tag."
 say "The bump workflow will rebuild the package; check it at:"
 say "  https://github.com/$REPO_OWNER/$PKG_REPO/actions"
