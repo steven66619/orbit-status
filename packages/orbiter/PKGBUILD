@@ -1,6 +1,6 @@
 # Maintainer: steven66619 <steven4x4@gmail.com>
 pkgname=orbiter
-pkgver=1.0.4
+pkgver=1.0.5
 pkgrel=1
 pkgdesc="Wayland application launcher with search and app icons"
 arch=('x86_64')
