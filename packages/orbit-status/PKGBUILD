@@ -2,7 +2,7 @@
 # Each version gets its own codename (e.g. 1.7 "Aurora"); the bump-versions
 # workflow keeps pkgver/_codename in sync with the latest v<ver>-<codename> tag.
 pkgname=orbit-status
-pkgver=1.8
+pkgver=1.9
 _codename=nebula
 pkgrel=1
 pkgdesc="Lightweight Wayland status bar with Lua plugin support"
