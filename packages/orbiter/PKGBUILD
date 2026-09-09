@@ -8,16 +8,16 @@ url="https://github.com/steven66619/orbiter"
 license=('MIT')
 depends=('wayland' 'cairo' 'pango' 'librsvg' 'libxkbcommon')
 makedepends=('cmake' 'wayland-protocols' 'pkg-config')
-# No release tags yet; track the main branch. Bump pkgver to release.
-source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbiter/archive/refs/heads/main.tar.gz")
+# No release tags yet; track the master branch. Bump pkgver to release.
+source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbiter/archive/refs/heads/master.tar.gz")
 sha256sums=('SKIP')
 
 build() {
-  cd "$srcdir/orbiter-main"
+  cd "$srcdir/orbiter-master"
   make release
 }
 
 package() {
-  cd "$srcdir/orbiter-main"
+  cd "$srcdir/orbiter-master"
   install -Dm755 build/orbiter "$pkgdir/usr/bin/orbiter"
 }
