@@ -1,8 +1,11 @@
 # Maintainer: steven66619 <steven4x4@gmail.com>
-# Each version gets its own codename (e.g. 1.7 "Aurora"); the bump-versions
+# Each version gets its own codename (e.g. 1.8 "Nebula"); the bump-versions
 # workflow keeps pkgver/_codename in sync with the latest v<ver>-<codename> tag.
+# pkgver carries the codename (1.8_nebula) so pacman shows it; _ver is the
+# numeric version used for the source tarball URL.
 pkgname=orbit-status
-pkgver=1.8
+pkgver=1.8_nebula
+_ver=1.8
 _codename=nebula
 pkgrel=1
 pkgdesc="Lightweight Wayland status bar with Lua plugin support"
@@ -11,15 +14,15 @@ url="https://github.com/steven66619/orbit-status"
 license=('MIT')
 depends=('wayland' 'cairo' 'pango' 'glib2' 'lua54' 'librsvg' 'dbus' 'libpulse')
 makedepends=('wayland-protocols' 'lua')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbit-status/archive/v$pkgver-$_codename.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbit-status/archive/v$_ver-$_codename.tar.gz")
 sha256sums=('SKIP')
 
 build() {
-  cd "$srcdir/$pkgname-$pkgver-$_codename"
+  cd "$srcdir/$pkgname-$_ver-$_codename"
   make PREFIX=/usr
 }
 
 package() {
-  cd "$srcdir/$pkgname-$pkgver-$_codename"
+  cd "$srcdir/$pkgname-$_ver-$_codename"
   make PREFIX=/usr DESTDIR="$pkgdir" install
 }

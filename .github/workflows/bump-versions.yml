@@ -45,10 +45,14 @@ jobs:
               echo "Latest tag $latest_tag has no codename; skipping $pkg"
               continue
             fi
-            current_version=$(sed -n 's/^pkgver=//p' "$pkgbuild")
+            current_pkgver=$(sed -n 's/^pkgver=//p' "$pkgbuild")
             current_codename=$(sed -n 's/^_codename=//p' "$pkgbuild")
+            # pkgver carries the codename (1.8_nebula); strip it for the
+            # numeric version comparison.
+            current_version=${current_pkgver%%_*}
             if [ "$version" != "$current_version" ] || [ "$codename" != "$current_codename" ]; then
-              sed -i "s/^pkgver=.*/pkgver=$version/" "$pkgbuild"
+              sed -i "s/^pkgver=.*/pkgver=${version}_${codename}/" "$pkgbuild"
+              sed -i "s/^_ver=.*/_ver=$version/" "$pkgbuild"
               sed -i "s/^_codename=.*/_codename=$codename/" "$pkgbuild"
               echo "Bumped $pkg: $current_version-$current_codename -> $version-$codename"
               changed=1

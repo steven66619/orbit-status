@@ -37,11 +37,27 @@ git tag v1.8-nebula && git push origin v1.8-nebula
 ```
 
 The `bump-versions` workflow picks up the highest-versioned tag, updates
-`pkgver` and `_codename` in the PKGBUILD, and rebuilds the package.
+`pkgver` and `_codename` in the PKGBUILD, and rebuilds the package. The
+codename is visible in the package version (`orbit-status 1.8_nebula-1`);
+pacman forbids hyphens in `pkgver`, so `_` is used instead.
+
+### Releasing with `update.sh`
+
+```sh
+./update.sh pulsar                          # orbit-status 1.9 "Pulsar" (auto version)
+./update.sh orbiter columbia                # orbiter 1.1.0 "Columbia"
+./update.sh realspeed-cli 1.2.0 dash        # explicit version
+./update.sh rename aurora                   # rename the latest codename on the fly
+```
+
+`update.sh` validates the codename, creates + pushes the
+`v<version>-<codename>` tag, and triggers the bump workflow. `rename`
+re-tags the latest release with a new codename (same version, same commit)
+and rebuilds.
 
 | Package | Theme | Releases | Next up |
 |---|---|---|---|
-| `orbit-status` | space/astronomy | 1.7 "Aurora" | 1.8 "Nebula", 1.9 "Pulsar", 1.10 "Quasar", "Supernova", "Eclipse", "Zenith", "Comet", "Cosmos", "Stellar", "Lunar", "Solar", "Galactic", "Celestial", "Astral", "Nova", "Meteor", "Gravity", "Horizon", "Orbit" |
+| `orbit-status` | space/astronomy | 1.7 "Aurora", 1.8 "Nebula" | 1.9 "Pulsar", 1.10 "Quasar", "Supernova", "Eclipse", "Zenith", "Comet", "Cosmos", "Stellar", "Lunar", "Solar", "Galactic", "Celestial", "Astral", "Nova", "Meteor", "Gravity", "Horizon", "Orbit" |
 | `orbiter` | space exploration | 1.0.5 "Apollo" | 1.1.0 "Columbia", "Discovery", "Endeavor", "Enterprise", "Gemini", "Mercury", "Odyssey", "Pathfinder", "Pioneer", "Ranger", "Sputnik", "Voyager", "Challenger", "Atlantis" |
 | `realspeed-cli` | speed | 1.0.0 "Blitz" | 1.1.0 "Dash", "Hyperdrive", "Lightspeed", "Ludicrous", "Mach", "Rocket", "Sprint", "Velocity", "Warp", "Zephyr", "Zoom", "Bolt", "Flash", "Jet", "Sonic", "Turbo" |
 

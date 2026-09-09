@@ -1,8 +1,11 @@
 # Maintainer: steven66619 <steven4x4@gmail.com>
 # Each version gets its own codename (e.g. 1.0.5 "Apollo"); the bump-versions
 # workflow keeps pkgver/_codename in sync with the latest v<ver>-<codename> tag.
+# pkgver carries the codename (1.0.5_apollo) so pacman shows it; _ver is the
+# numeric version used for the source tarball URL.
 pkgname=orbiter
-pkgver=1.0.5
+pkgver=1.0.5_apollo
+_ver=1.0.5
 _codename=apollo
 pkgrel=1
 pkgdesc="Wayland application launcher with search and app icons"
@@ -11,15 +14,15 @@ url="https://github.com/steven66619/orbiter"
 license=('MIT')
 depends=('wayland' 'cairo' 'pango' 'librsvg' 'libxkbcommon')
 makedepends=('cmake' 'wayland-protocols' 'pkg-config')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbiter/archive/v$pkgver-$_codename.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbiter/archive/v$_ver-$_codename.tar.gz")
 sha256sums=('SKIP')
 
 build() {
-  cd "$srcdir/$pkgname-$pkgver-$_codename"
+  cd "$srcdir/$pkgname-$_ver-$_codename"
   make release
 }
 
 package() {
-  cd "$srcdir/$pkgname-$pkgver-$_codename"
+  cd "$srcdir/$pkgname-$_ver-$_codename"
   install -Dm755 build/orbiter "$pkgdir/usr/bin/orbiter"
 }
