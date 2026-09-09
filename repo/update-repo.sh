@@ -85,23 +85,19 @@ generate_arch() {
     mkdir -p "$ARCH_DIR"
     local arch_arch="x86_64"
     pushd "$ARCH_DIR" >/dev/null
-    for db in orbit-status orbit-status-personal; do
-        local pattern
-        case "$db" in
-            orbit-status) pattern="orbit-status-*-${arch_arch}.pkg.tar.zst" ;;
-            orbit-status-personal) pattern="orbit-status-personal-*-${arch_arch}.pkg.tar.zst" ;;
-        esac
-        if [ -z "$(ls $pattern 2>/dev/null)" ]; then
-            echo "    No $db packages ($pattern) found, skipping"
-            continue
+    # Single db (named after the repo) holding every package in this dir:
+    # orbit-status, orbiter, realspeed-cli, ...
+    local pattern="*-${arch_arch}.pkg.tar.zst"
+    if [ -z "$(ls $pattern 2>/dev/null)" ]; then
+        echo "    No packages ($pattern) found, skipping"
+    else
+        if ! repo-add --sign "orbit-status.db.tar.zst" $pattern 2>&1; then
+            echo "    repo-add failed, trying without sign"
+            repo-add "orbit-status.db.tar.zst" $pattern 2>&1 || true
         fi
-        if ! repo-add --sign "$db.db.tar.zst" $pattern 2>&1; then
-            echo "    repo-add failed for $db, trying without sign"
-            repo-add "$db.db.tar.zst" $pattern 2>&1 || true
-        fi
-        sign_file "$db.db"
-    done
-    echo "    Arch repo ready"
+        sign_file "orbit-status.db"
+        echo "    Arch repo ready"
+    fi
     popd >/dev/null
 }
 

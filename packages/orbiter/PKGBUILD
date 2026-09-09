@@ -1,0 +1,23 @@
+# Maintainer: steven66619 <steven4x4@gmail.com>
+pkgname=orbiter
+pkgver=1.0.4
+pkgrel=1
+pkgdesc="Wayland application launcher with search and app icons"
+arch=('x86_64')
+url="https://github.com/steven66619/orbiter"
+license=('MIT')
+depends=('wayland' 'cairo' 'pango' 'librsvg' 'libxkbcommon')
+makedepends=('cmake' 'wayland-protocols' 'pkg-config')
+# No release tags yet; track the main branch. Bump pkgver to release.
+source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/orbiter/archive/refs/heads/main.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$srcdir/orbiter-main"
+  make release
+}
+
+package() {
+  cd "$srcdir/orbiter-main"
+  install -Dm755 build/orbiter "$pkgdir/usr/bin/orbiter"
+}

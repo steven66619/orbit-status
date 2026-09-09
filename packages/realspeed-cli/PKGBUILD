@@ -1,0 +1,23 @@
+# Maintainer: steven66619 <steven4x4@gmail.com>
+pkgname=realspeed-cli
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="SamKnows-based internet speed test CLI"
+arch=('x86_64')
+url="https://github.com/steven66619/realspeed-cli"
+license=('MIT')
+depends=()
+makedepends=('go')
+# No release tags yet; track the main branch. Bump pkgver to release.
+source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/realspeed-cli/archive/refs/heads/main.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$srcdir/realspeed-cli-main"
+  make
+}
+
+package() {
+  cd "$srcdir/realspeed-cli-main"
+  make PREFIX=/usr DESTDIR="$pkgdir" install
+}

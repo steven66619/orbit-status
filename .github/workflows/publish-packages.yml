@@ -5,7 +5,7 @@ on:
     branches: [main, personal]
     paths:
       - 'repo/**'
-      - 'PKGBUILD'
+      - 'packages/**'
       - '.github/workflows/**'
   workflow_dispatch:
 
@@ -37,18 +37,20 @@ jobs:
           pacman -Syu --noconfirm
           pacman -S --needed --noconfirm base-devel pacman-contrib \
             wayland wayland-protocols cairo pango libxkbcommon glib2 \
-            librsvg dbus libpulse lua lua54
+            librsvg dbus libpulse lua lua54 go cmake
 
-      - name: Build package and regenerate Arch repo metadata
+      - name: Build packages and regenerate Arch repo metadata
         run: |
           # makepkg refuses to run as root; build as a non-root user
           useradd -m builder
           chown -R builder:builder .
-          su builder -c "cd $PWD && makepkg -f --noconfirm"
-          # Drop the -debug package makepkg also produces
-          rm -f orbit-status-debug-*.pkg.tar.zst
           mkdir -p repo/arch/x86_64
-          cp orbit-status-*.pkg.tar.zst repo/arch/x86_64/
+          for pkg in packages/*/; do
+            su builder -c "cd $PWD/$pkg && makepkg -f --noconfirm"
+            # Drop the -debug package makepkg also produces
+            rm -f "$pkg"/*-debug-*.pkg.tar.zst
+            cp "$pkg"/*.pkg.tar.zst repo/arch/x86_64/
+          done
           # Regenerate metadata from scratch so old versions don't linger
           rm -f repo/arch/x86_64/orbit-status.db* repo/arch/x86_64/orbit-status.files*
           chmod +x repo/update-repo.sh
