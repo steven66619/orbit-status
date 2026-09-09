@@ -37,7 +37,7 @@ jobs:
           pacman -Syu --noconfirm
           pacman -S --needed --noconfirm base-devel pacman-contrib \
             wayland wayland-protocols cairo pango libxkbcommon glib2 \
-            librsvg dbus libpulse lua
+            librsvg dbus libpulse lua lua54
 
       - name: Build package and regenerate Arch repo metadata
         run: |
