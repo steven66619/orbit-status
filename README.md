@@ -29,21 +29,21 @@ CI signing is configured.
 
 ## Release codenames
 
-Releases use codenames instead of version numbers (like Ubuntu). Pick the
-next unused name in alphabetical order so pacman treats it as an upgrade,
-then tag the source repo:
+Each version gets its own codename (like Ubuntu's "24.04 LTS *Noble Numbat*").
+Tag the source repo with `v<version>-<codename>`:
 
 ```sh
-git tag nebula && git push origin nebula
+git tag v1.8-nebula && git push origin v1.8-nebula
 ```
 
-The `bump-versions` workflow picks it up and rebuilds the package.
+The `bump-versions` workflow picks up the highest-versioned tag, updates
+`pkgver` and `_codename` in the PKGBUILD, and rebuilds the package.
 
-| Package | Theme | Used | Next up |
+| Package | Theme | Releases | Next up |
 |---|---|---|---|
-| `orbit-status` | space/astronomy | aurora | nebula, pulsar, quasar, supernova, eclipse, zenith, comet, cosmos, stellar, lunar, solar, galactic, celestial, astral, nova, meteor, gravity, horizon, orbit |
-| `orbiter` | space exploration | apollo | columbia, discovery, endeavor, enterprise, gemini, mercury, odyssey, pathfinder, pioneer, ranger, sputnik, voyager, challenger, atlantis |
-| `realspeed-cli` | speed | blitz | dash, hyperdrive, lightspeed, ludicrous, mach, rocket, sprint, velocity, warp, zephyr, zoom, bolt, flash, jet, sonic, turbo |
+| `orbit-status` | space/astronomy | 1.7 "Aurora" | 1.8 "Nebula", 1.9 "Pulsar", 1.10 "Quasar", "Supernova", "Eclipse", "Zenith", "Comet", "Cosmos", "Stellar", "Lunar", "Solar", "Galactic", "Celestial", "Astral", "Nova", "Meteor", "Gravity", "Horizon", "Orbit" |
+| `orbiter` | space exploration | 1.0.5 "Apollo" | 1.1.0 "Columbia", "Discovery", "Endeavor", "Enterprise", "Gemini", "Mercury", "Odyssey", "Pathfinder", "Pioneer", "Ranger", "Sputnik", "Voyager", "Challenger", "Atlantis" |
+| `realspeed-cli` | speed | 1.0.0 "Blitz" | 1.1.0 "Dash", "Hyperdrive", "Lightspeed", "Ludicrous", "Mach", "Rocket", "Sprint", "Velocity", "Warp", "Zephyr", "Zoom", "Bolt", "Flash", "Jet", "Sonic", "Turbo" |
 
 ## Debian/Ubuntu
 
