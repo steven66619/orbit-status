@@ -45,14 +45,17 @@ jobs:
           useradd -m builder
           chown -R builder:builder .
           su builder -c "cd $PWD && makepkg -f --noconfirm"
+          # Drop the -debug package makepkg also produces
+          rm -f orbit-status-debug-*.pkg.tar.zst
           mkdir -p repo/arch/x86_64
           cp orbit-status-*.pkg.tar.zst repo/arch/x86_64/
           # Regenerate metadata from scratch so old versions don't linger
           rm -f repo/arch/x86_64/orbit-status.db* repo/arch/x86_64/orbit-status.files*
           chmod +x repo/update-repo.sh
           ./repo/update-repo.sh arch
-          # repo-add creates .db.tar.zst/.files.tar.zst (and symlinks for the
-          # plain names); publish real files so GitHub Pages serves them
+          # repo-add creates .db.tar.zst/.files.tar.zst and symlinks the plain
+          # names; publish real files so GitHub Pages serves them
+          rm -f repo/arch/x86_64/orbit-status.db repo/arch/x86_64/orbit-status.files
           cp -f repo/arch/x86_64/orbit-status.db.tar.zst repo/arch/x86_64/orbit-status.db
           cp -f repo/arch/x86_64/orbit-status.files.tar.zst repo/arch/x86_64/orbit-status.files
 
