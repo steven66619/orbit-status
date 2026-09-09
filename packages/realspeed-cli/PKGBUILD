@@ -8,16 +8,17 @@ url="https://github.com/steven66619/realspeed-cli"
 license=('MIT')
 depends=()
 makedepends=('go')
-# No release tags yet; track the main branch. Bump pkgver to release.
-source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/realspeed-cli/archive/refs/heads/main.tar.gz")
+# Source from release tags; the bump-versions workflow keeps pkgver in
+# sync with the latest tag on the realspeed-cli repo.
+source=("$pkgname-$pkgver.tar.gz::https://github.com/steven66619/realspeed-cli/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 build() {
-  cd "$srcdir/realspeed-cli-main"
+  cd "$srcdir/$pkgname-$pkgver"
   make
 }
 
 package() {
-  cd "$srcdir/realspeed-cli-main"
+  cd "$srcdir/$pkgname-$pkgver"
   make PREFIX=/usr DESTDIR="$pkgdir" install
 }

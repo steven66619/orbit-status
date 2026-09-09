@@ -1,0 +1,49 @@
+name: Bump package versions on new releases
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # hourly
+  workflow_dispatch:
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bump pkgver to latest release tags
+        run: |
+          set -euo pipefail
+          # package -> source repo
+          declare -A repos=(
+            [orbit-status]=steven66619/orbit-status
+            [orbiter]=steven66619/orbiter
+            [realspeed-cli]=steven66619/realspeed-cli
+          )
+          changed=0
+          for pkg in "${!repos[@]}"; do
+            repo="${repos[$pkg]}"
+            pkgbuild="packages/$pkg/PKGBUILD"
+            [ -f "$pkgbuild" ] || continue
+            latest=$(curl -fsSL "https://api.github.com/repos/$repo/tags" | jq -r '.[0].name // empty' | sed 's/^v//')
+            [ -n "$latest" ] || { echo "No tags for $repo, skipping"; continue; }
+            current=$(sed -n 's/^pkgver=//p' "$pkgbuild")
+            if [ "$latest" != "$current" ]; then
+              sed -i "s/^pkgver=.*/pkgver=$latest/" "$pkgbuild"
+              echo "Bumped $pkg: $current -> $latest"
+              changed=1
+            else
+              echo "$pkg already at $latest"
+            fi
+          done
+          if [ "$changed" -eq 1 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add packages/
+            git commit -m "chore: bump package versions to latest releases"
+            git push
+          else
+            echo "No version bumps needed"
+          fi
