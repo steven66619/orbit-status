@@ -45,7 +45,7 @@ pacman forbids hyphens in `pkgver`, so `_` is used instead.
 
 ```sh
 ./update.sh pulsar                          # orbit-status 1.9 "Pulsar" (auto version)
-./update.sh orbiter columbia                # orbiter 1.1.0 "Columbia"
+./update.sh orbiter discovery               # orbiter 1.2.0 "Discovery"
 ./update.sh realspeed-cli 1.2.0 dash        # explicit version
 ./update.sh rename aurora                   # rename the latest codename on the fly
 ```
@@ -58,7 +58,7 @@ and rebuilds.
 | Package | Theme | Releases | Next up |
 |---|---|---|---|
 | `orbit-status` | space/astronomy | 1.7 "Aurora", 1.8 "Nebula" | 1.9 "Pulsar", 1.10 "Quasar", "Supernova", "Eclipse", "Zenith", "Comet", "Cosmos", "Stellar", "Lunar", "Solar", "Galactic", "Celestial", "Astral", "Nova", "Meteor", "Gravity", "Horizon", "Orbit" |
-| `orbiter` | space exploration | 1.0.5 "Apollo" | 1.1.0 "Columbia", "Discovery", "Endeavor", "Enterprise", "Gemini", "Mercury", "Odyssey", "Pathfinder", "Pioneer", "Ranger", "Sputnik", "Voyager", "Challenger", "Atlantis" |
+| `orbiter` | space exploration | 1.0.5 "Apollo", 1.1.0 "Columbia" | 1.2.0 "Discovery", "Endeavor", "Enterprise", "Gemini", "Mercury", "Odyssey", "Pathfinder", "Pioneer", "Ranger", "Sputnik", "Voyager", "Challenger", "Atlantis" |
 | `realspeed-cli` | speed | 1.0.0 "Blitz" | 1.1.0 "Dash", "Hyperdrive", "Lightspeed", "Ludicrous", "Mach", "Rocket", "Sprint", "Velocity", "Warp", "Zephyr", "Zoom", "Bolt", "Flash", "Jet", "Sonic", "Turbo" |
 
 ## Debian/Ubuntu
