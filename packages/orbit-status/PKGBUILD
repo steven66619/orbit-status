@@ -5,9 +5,9 @@
 # pkgver carries the codename when present (1.8_nebula) so pacman shows it;
 # _ver is the numeric version used for the source tarball URL.
 pkgname=orbit-status
-pkgver=1.9
-_ver=1.9
-_codename=
+pkgver=2.0_discovery
+_ver=2.0
+_codename=discovery
 pkgrel=1
 pkgdesc="Lightweight Wayland status bar with Lua plugin support"
 arch=('x86_64' 'aarch64')
