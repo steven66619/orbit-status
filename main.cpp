@@ -10,6 +10,7 @@
 #include <poll.h>
 #include <sys/timerfd.h>
 #include <sys/inotify.h>
+#include <dirent.h>
 #include <csignal>
 #include <cerrno>
 #include <cctype>
@@ -177,6 +178,352 @@ static const char *config_path() {
     static char buf[512];
     snprintf(buf, sizeof(buf), "%s/.config/orbit-status/config", home);
     return buf;
+}
+
+/* ------------------------------------------------------------------ */
+/* --check-config: report unknown keys, duplicate keys, mistyped      */
+/* values, bad enum values, and dangling references. The bar itself   */
+/* silently ignores all of these, so a typo does nothing and is easy  */
+/* to miss; this validates the file the same way the rest of the code */
+/* reads it (config_get/config_get_int/config_get_color).             */
+/* ------------------------------------------------------------------ */
+static const char *CONFIG_KEYS[] = {
+    "accent_color", "bar_anchor", "bar_bg_color", "bar_height", "bar_layer",
+    "bar_padding", "clock_font_size", "date_format", "font_family",
+    "glow_alpha_percent", "glow_width", "hyperion_color", "icon_alpha_percent",
+    "icon_hover_alpha_percent", "icon_size", "lua_plugins_dir", "pill_font_size",
+    "pill_gap", "pill_order", "pill_pad_h", "pill_pad_w", "show_active_window",
+    "show_clock", "show_hyperion", "show_hyperion_logo", "show_power",
+    "poweroff_color", "reboot_color", "show_tray", "suspend_color",
+    "tray_icon_size", "workspace_font_size", "workspace_switch_cmd",
+    "weather_location",
+};
+static const int N_CONFIG_KEYS = (int)(sizeof(CONFIG_KEYS) / sizeof(CONFIG_KEYS[0]));
+
+static bool config_key_is_bool(const char *key) {
+    return strncmp(key, "show_", 5) == 0;
+}
+
+// Classify a key. Returns the plugin slot (1-based) for plugin-scoped keys
+// (show_lua_plugin_N, click_lua_plugin_N, lua_plugin_N_<field>) and stores
+// the field in `field`; returns 0 for non-plugin keys, -1 for malformed
+// plugin keys (bad slot number or unknown field).
+static int config_plugin_key_index(const char *key, char *field, size_t fieldsz) {
+    auto setf = [&](const char *f) { if (field) snprintf(field, fieldsz, "%s", f); };
+    int n = 0, consumed = 0;
+    if (sscanf(key, "show_lua_plugin_%d%n", &n, &consumed) == 1 && key[consumed] == 0) {
+        if (n < 1 || n > MAX_LUA_PLUGINS) return -1;
+        setf("show"); return n;
+    }
+    if (sscanf(key, "click_lua_plugin_%d%n", &n, &consumed) == 1 && key[consumed] == 0) {
+        if (n < 1 || n > MAX_LUA_PLUGINS) return -1;
+        setf("click"); return n;
+    }
+    if (sscanf(key, "lua_plugin_%d_%n", &n, &consumed) == 1) {
+        if (n < 1 || n > MAX_LUA_PLUGINS) return -1;
+        const char *suffixes[] = {"cmd", "path", "interval", "watch", "prefix", "color"};
+        for (const char *sfx : suffixes)
+            if (strcmp(key + consumed, sfx) == 0) { setf(sfx); return n; }
+        return -1;
+    }
+    return 0;
+}
+
+static bool config_parse_int(const char *val) {
+    char *end = nullptr;
+    strtol(val, &end, 10);
+    return end != val && *trim(end) == 0;
+}
+
+static bool config_parse_bool(const char *val) {
+    return strcmp(val, "0") == 0 || strcmp(val, "1") == 0;
+}
+
+static bool config_parse_color(const char *val) {
+    float r, g, b, a;
+    int n = sscanf(val, "%f %f %f %f", &r, &g, &b, &a);
+    if (n < 3) return false;
+    float comps[4] = {r, g, b, a};
+    for (int i = 0; i < n; i++)
+        if (comps[i] < 0.0f || comps[i] > 1.0f) return false;
+    return true;
+}
+
+// Levenshtein distance, abandoning early once the result exceeds `max`.
+static int config_edit_distance(const char *a, const char *b, int max) {
+    int la = (int)strlen(a), lb = (int)strlen(b);
+    if (la - lb > max || lb - la > max) return max + 1;
+    if (la >= 64 || lb >= 64) return max + 1;
+    int d[64][64];
+    for (int i = 0; i <= la; i++) d[i][0] = i;
+    for (int j = 0; j <= lb; j++) d[0][j] = j;
+    for (int i = 1; i <= la; i++) {
+        for (int j = 1; j <= lb; j++) {
+            int m = d[i-1][j] + 1;
+            if (d[i][j-1] + 1 < m) m = d[i][j-1] + 1;
+            if (d[i-1][j-1] + (a[i-1] == b[j-1] ? 0 : 1) < m) m = d[i-1][j-1] + (a[i-1] == b[j-1] ? 0 : 1);
+            d[i][j] = m;
+        }
+    }
+    return d[la][lb];
+}
+
+// Scan the plugin directory for keys plugins read directly from the config
+// file (the 'key == "name"' idiom used by weather.lua and friends). Those
+// keys are owned by the plugin, so --check-config must not flag them.
+static int config_harvest_plugin_keys(const char *dir, char keys[][64], int max_keys) {
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    int n = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != nullptr && n < max_keys) {
+        size_t len = strlen(de->d_name);
+        if (len < 5 || strcmp(de->d_name + len - 4, ".lua") != 0) continue;
+        char p[512];
+        snprintf(p, sizeof(p), "%s/%s", dir, de->d_name);
+        FILE *fp = fopen(p, "r");
+        if (!fp) continue;
+        char buf[8192];
+        size_t got = fread(buf, 1, sizeof(buf) - 1, fp);
+        buf[got] = 0;
+        fclose(fp);
+        for (char *s = buf; (s = strstr(s, "key")) != nullptr;) {
+            s += 3;
+            char *q = s;
+            while (*q == ' ') q++;
+            if (*q != '=' || q[1] != '=') continue;
+            q += 2;
+            while (*q == ' ') q++;
+            if (*q != '"' && *q != '\'') continue;
+            char quote = *q++;
+            char *e = q;
+            while (*e && *e != quote &&
+                   (isalnum((unsigned char)*e) || *e == '_')) e++;
+            if (*e != quote || e == q) continue;
+            size_t klen = (size_t)(e - q);
+            if (klen >= 64) { s = e + 1; continue; }
+            bool dup = false;
+            for (int i = 0; i < n; i++)
+                if (strncmp(keys[i], q, klen) == 0 && keys[i][klen] == 0) { dup = true; break; }
+            if (!dup) { memcpy(keys[n], q, klen); keys[n][klen] = 0; n++; }
+            s = e + 1;
+        }
+    }
+    closedir(d);
+    return n;
+}
+
+// Returns 0 if valid (or no config file), number of errors otherwise
+// (warnings do not affect the exit code). Diagnostics go to stderr in
+// "file:line: ..." form, summary to stdout.
+static int config_check(const char *path) {
+    Config *cfg = config_load(path);
+    if (!cfg) { fprintf(stderr, "orbit-status: out of memory\n"); return 1; }
+    if (cfg->n_entries == 0) {
+        config_destroy(cfg);
+        printf("orbit-status: no config at %s - all defaults apply\n", path);
+        return 0;
+    }
+
+    int errors = 0, warns = 0;
+    auto err = [&](const ConfigEntry &e, const char *fmt, auto... args) {
+        errors++;
+        fprintf(stderr, "%s:%d: error: ", path, e.line);
+        fprintf(stderr, fmt, args...);
+        fputc('\n', stderr);
+    };
+    auto warn = [&](const ConfigEntry &e, const char *fmt, auto... args) {
+        warns++;
+        fprintf(stderr, "%s:%d: warning: ", path, e.line);
+        fprintf(stderr, fmt, args...);
+        fputc('\n', stderr);
+    };
+
+    // Keys that plugins read directly from this config file.
+    char plugin_keys[64][64] = {};
+    int n_plugin_keys = 0;
+    {
+        char pdir[512] = "";
+        const char *home = getenv("HOME");
+        const char *pdcfg = config_get(cfg, "lua_plugins_dir", "");
+        if (pdcfg[0])
+            snprintf(pdir, sizeof(pdir), "%s", pdcfg);
+        else if (home)
+            snprintf(pdir, sizeof(pdir), "%s/.config/orbit-status/plugins", home);
+        if (pdir[0]) n_plugin_keys = config_harvest_plugin_keys(pdir, plugin_keys, 64);
+    }
+
+    // Suggestion pool: every key name the core or any plugin can read.
+    static const char *plug_fields[] = {"cmd", "path", "interval", "watch", "prefix", "color"};
+    char names[200][64];
+    int n_names = 0;
+    for (int k = 0; k < N_CONFIG_KEYS && n_names < 200; k++)
+        snprintf(names[n_names++], 64, "%s", CONFIG_KEYS[k]);
+    for (int i = 0; i < n_plugin_keys && n_names < 200; i++)
+        snprintf(names[n_names++], 64, "%s", plugin_keys[i]);
+    for (int slot = 1; slot <= MAX_LUA_PLUGINS && n_names < 200; slot++) {
+        for (const char *f : plug_fields) {
+            if (n_names >= 200) break;
+            snprintf(names[n_names++], 64, "lua_plugin_%d_%s", slot, f);
+        }
+        if (n_names < 200) snprintf(names[n_names++], 64, "show_lua_plugin_%d", slot);
+        if (n_names < 200) snprintf(names[n_names++], 64, "click_lua_plugin_%d", slot);
+    }
+
+    // Pass 1: which plugin slots actually have a cmd/path? A slot that is
+    // only referenced by show_*/click_*/color/prefix/interval/watch is a
+    // no-op the bar will silently drop.
+    bool defined[MAX_LUA_PLUGINS + 1] = {};
+    for (int i = 0; i < cfg->n_entries; i++) {
+        char field[16];
+        int n = config_plugin_key_index(cfg->entries[i].key, field, sizeof(field));
+        if (n > 0 && (strcmp(field, "cmd") == 0 || strcmp(field, "path") == 0))
+            defined[n] = true;
+    }
+
+    for (int i = 0; i < cfg->n_entries; i++) {
+        ConfigEntry &e = cfg->entries[i];
+
+        // Duplicate keys: config_get returns the first, later ones are dead.
+        for (int j = 0; j < i; j++) {
+            if (strcmp(e.key, cfg->entries[j].key) == 0) {
+                err(e, "duplicate key '%s' (first defined on line %d; the later value is ignored)",
+                    e.key, cfg->entries[j].line);
+                break;
+            }
+        }
+
+        // Known keys: static core keys, plugin-slot keys, or keys harvested
+        // from plugin sources. Anything else is either a confident typo of a
+        // known key (error) or a key nothing reads (warning).
+        bool known = false;
+        for (int k = 0; k < N_CONFIG_KEYS; k++) {
+            if (strcmp(e.key, CONFIG_KEYS[k]) == 0) { known = true; break; }
+        }
+        int plug_n = 0;
+        char plug_field[16];
+        if (!known) {
+            plug_n = config_plugin_key_index(e.key, plug_field, sizeof(plug_field));
+            known = plug_n > 0;
+        }
+        if (!known) {
+            for (int k = 0; k < n_plugin_keys; k++)
+                if (strcmp(e.key, plugin_keys[k]) == 0) { known = true; break; }
+        }
+        if (!known) {
+            if (plug_n < 0) {
+                err(e, "invalid plugin key '%s' (slots are 1-%d; fields: cmd, path, interval, watch, prefix, color)",
+                    e.key, MAX_LUA_PLUGINS);
+            } else {
+                char best[64] = "";
+                int allowed = (int)strlen(e.key) >= 8 ? 2 : 1;
+                int bestd = allowed + 1;
+                for (int k = 0; k < n_names; k++) {
+                    int dd = config_edit_distance(e.key, names[k], bestd);
+                    if (dd < bestd) { bestd = dd; snprintf(best, sizeof(best), "%s", names[k]); }
+                }
+                if (best[0] && bestd <= allowed)
+                    err(e, "unknown key '%s' - did you mean '%s'?", e.key, best);
+                else
+                    warn(e, "'%s' is not read by orbit-status or any plugin (dead config?)", e.key);
+            }
+            continue;
+        }
+
+        // Typed checks for known static keys.
+        if (plug_n == 0) {
+            if (config_key_is_bool(e.key)) {
+                if (!config_parse_bool(e.value))
+                    err(e, "'%s' expects 0 or 1, got '%s'", e.key, e.value);
+            } else if (strstr(e.key, "color") != nullptr) {
+                if (!config_parse_color(e.value))
+                    err(e, "'%s' expects 'R G B [A]' floats in 0..1, got '%s'", e.key, e.value);
+            } else if (strcmp(e.key, "bar_height") == 0 || strcmp(e.key, "bar_padding") == 0 ||
+                       strcmp(e.key, "pill_font_size") == 0 || strcmp(e.key, "pill_gap") == 0 ||
+                       strcmp(e.key, "pill_pad_h") == 0 || strcmp(e.key, "pill_pad_w") == 0 ||
+                       strcmp(e.key, "clock_font_size") == 0 ||
+                       strcmp(e.key, "workspace_font_size") == 0 ||
+                       strcmp(e.key, "icon_size") == 0 || strcmp(e.key, "tray_icon_size") == 0 ||
+                       strcmp(e.key, "glow_width") == 0 ||
+                       strcmp(e.key, "glow_alpha_percent") == 0 ||
+                       strcmp(e.key, "icon_alpha_percent") == 0 ||
+                       strcmp(e.key, "icon_hover_alpha_percent") == 0) {
+                if (!config_parse_int(e.value))
+                    err(e, "'%s' expects a number, got '%s'", e.key, e.value);
+            } else if (strcmp(e.key, "bar_anchor") == 0) {
+                if (strcmp(e.value, "top") != 0 && strcmp(e.value, "bottom") != 0)
+                    err(e, "bar_anchor must be 'top' or 'bottom', got '%s'", e.value);
+            } else if (strcmp(e.key, "bar_layer") == 0) {
+                if (strcmp(e.value, "top") != 0 && strcmp(e.value, "overlay") != 0)
+                    err(e, "bar_layer must be 'top' or 'overlay', got '%s'", e.value);
+            } else if (strcmp(e.key, "pill_order") == 0) {
+                // References are validated in pass 2 below.
+            }
+        } else {
+            // Typed checks for plugin keys.
+            if (strcmp(plug_field, "interval") == 0 || strcmp(plug_field, "watch") == 0) {
+                if (!config_parse_int(e.value))
+                    err(e, "lua_plugin_%d_%s expects a number, got '%s'", plug_n, plug_field, e.value);
+            } else if (strcmp(plug_field, "color") == 0) {
+                if (!config_parse_color(e.value))
+                    err(e, "lua_plugin_%d_color expects 'R G B [A]' floats in 0..1, got '%s'", plug_n, e.value);
+            }
+            if (!defined[plug_n] && strcmp(plug_field, "cmd") != 0 && strcmp(plug_field, "path") != 0)
+                err(e, "lua_plugin_%d is referenced but has no lua_plugin_%d_cmd or lua_plugin_%d_path - it will not appear in the bar", plug_n, plug_n, plug_n);
+        }
+    }
+
+    // Pass 2: pill_order tokens are 1-based indices into the pills that
+    // actually render (the defined plugins, in slot order). Validate shape,
+    // duplicates, and dangling references; render-time silently drops any
+    // token that does not match, which hides typos like "1,2,4".
+    const char *order = config_get(cfg, "pill_order", "");
+    if (order[0]) {
+        int pill_order_line = 0;
+        for (int i = 0; i < cfg->n_entries; i++)
+            if (strcmp(cfg->entries[i].key, "pill_order") == 0)
+                pill_order_line = cfg->entries[i].line;
+
+        int ndefined = 0;
+        for (int n = 1; n <= MAX_LUA_PLUGINS; n++)
+            if (defined[n]) ndefined++;
+
+        char tmp[256];
+        snprintf(tmp, sizeof(tmp), "%s", order);
+        int seen[17] = {};
+        for (char *tok = strtok(tmp, ","); tok; tok = strtok(nullptr, ",")) {
+            char *t = trim(tok);
+            if (*t == 0) continue;
+            char *end = nullptr;
+            long n = strtol(t, &end, 10);
+            if (end == t || *end != 0) {
+                err(cfg->entries[pill_order_line - 1],
+                    "pill_order token '%s' is not a number", t);
+                continue;
+            }
+            if (n < 1) {
+                err(cfg->entries[pill_order_line - 1],
+                    "pill_order positions are 1-based; got %ld", n);
+                continue;
+            }
+            if (n > ndefined) {
+                err(cfg->entries[pill_order_line - 1],
+                    "pill_order references position %ld but only %d plugin(s) are defined", n, ndefined);
+                continue;
+            }
+            if (seen[n]) {
+                err(cfg->entries[pill_order_line - 1],
+                    "pill_order lists position %ld twice", n);
+            } else {
+                seen[n] = 1;
+            }
+        }
+    }
+
+    config_destroy(cfg);
+    printf("orbit-status: checked %s: %d error%s, %d warning%s\n",
+        path, errors, errors == 1 ? "" : "s", warns, warns == 1 ? "" : "s");
+    return errors;
 }
 
 static void render(OrbitStatus *ws);
@@ -2095,7 +2442,27 @@ static int acquire_single_instance_lock(void) {
 /* Main                                                               */
 /* ------------------------------------------------------------------ */
 
-int main() {
+int main(int argc, char **argv) {
+    // --check-config: validate the config file and exit before touching
+    // Wayland/DBus/single-instance-lock, so it is safe to run any time.
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--check-config") == 0) {
+            const char *path = config_path();
+            if (!path) {
+                fprintf(stderr, "orbit-status: HOME not set\n");
+                return 2;
+            }
+            return config_check(path) == 0 ? 0 : 2;
+        }
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            printf("usage: orbit-status [--check-config] [-h|--help]\n"
+                   "  --check-config  validate ~/.config/orbit-status/config and exit\n");
+            return 0;
+        }
+        fprintf(stderr, "orbit-status: unknown option '%s' (try --help)\n", argv[i]);
+        return 2;
+    }
+
     int lock_fd = acquire_single_instance_lock();
     if (lock_fd < 0) {
         // -1 means another healthy instance holds the lock; -2 means the

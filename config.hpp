@@ -9,6 +9,7 @@
 struct ConfigEntry {
     char key[64];
     char value[256];
+    int line = 0;   // 1-based line in the config file (for --check-config)
 };
 
 struct Config {
@@ -32,7 +33,9 @@ static inline Config *config_load(const char *path) {
     if (!fp) return cfg;
 
     char line[512];
+    int lineno = 0;
     while (fgets(line, sizeof(line), fp) && cfg->n_entries < 128) {
+        lineno++;
         char *p = trim(line);
         if (*p == 0 || *p == '#') continue;
 
@@ -45,6 +48,7 @@ static inline Config *config_load(const char *path) {
         ConfigEntry *e = &cfg->entries[cfg->n_entries++];
         snprintf(e->key, sizeof(e->key), "%s", key);
         snprintf(e->value, sizeof(e->value), "%s", val);
+        e->line = lineno;
     }
 
     fclose(fp);

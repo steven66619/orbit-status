@@ -10,6 +10,7 @@ Inspired by the clean, responsive aesthetic of the **Distro Tube Operating Syste
 * **Native Wayland Architecture**: Renders via the `wlr-layer-shell` protocol (Sway, Hyprland, river, Wayfire, and other wlroots-based compositors) with double-buffered shared-memory surfaces. Workspace state and the focused window are read directly from the compositor over the Sway/i3 IPC UNIX domain socket — no X11, no XWayland, no external bar daemons.
 * **StatusNotifier System Tray**: Owns `org.kde.StatusNotifierWatcher` on the session DBus and renders StatusNotifierItem icons (nm-tray, CopyQ, Steam, etc.) with click support (Activate / SecondaryActivate / ContextMenu) and scroll support (Scroll). Ships with **`volume-sni`**, a Wayland-native volume control that registers as a StatusNotifierItem (left-click toggles mute, scroll changes volume) — a drop-in replacement for the abandoned X11-only `volumeicon`. `orbit-status` autostarts `volume-sni` after the tray is up (no session config needed), and `volume-sni` re-registers if the watcher appears or restarts later, so the icon always shows regardless of start order.
 * **Isolated Lua Sandboxing**: Loads every discrete status pill into its own independent, sandboxed Lua engine state. Plugins execute safely in separate frames without risking memory access collisions or UI lock-ups.
+* **Config Validation** (`--check-config`): Catches typos and dead settings before they waste an evening. The bar itself silently ignores anything it does not understand; `orbit-status --check-config` reports unknown keys (with "did you mean" suggestions), duplicate keys, mistyped values (numbers, booleans, colors, enums), dangling `pill_order` references, and plugin slots that are configured but never defined. Keys read directly by Lua plugins are honored, and unrecognized keys that match nothing known are reported as warnings rather than errors.
 * **Systemd-Independent Compatibility**: Retains absolute portability. Because data tracking bypasses systemd APIs entirely, `orbit-status` runs out of the box on alternative init systems including **OpenRC**, **runit**, and **s6**, making it a perfect fit for distributions like Void Linux, Artix, or Alpine.
 
 ## Architectural Layout
@@ -43,6 +44,24 @@ function tick()
     return "    12% "
 end
 ```
+
+## Validating Your Config
+
+The bar never fails on a bad config — it silently falls back to defaults for anything it cannot read, which makes typos hard to spot. Run the validator after editing:
+
+```bash
+orbit-status --check-config
+```
+
+Exit code `0` means the config is clean (warnings allowed), `2` means errors were found. Diagnostics are `file:line:`-addressed:
+
+```text
+/home/ste/.config/orbit-status/config:52: error: unknown key 'pill_fnt_size' - did you mean 'pill_font_size'?
+/home/ste/.config/orbit-status/config:23: error: 'accent_color' expects 'R G B [A]' floats in 0..1, got '255 0 0'
+/home/ste/.config/orbit-status/config:30: warning: 'disk_path' is not read by orbit-status or any plugin (dead config?)
+```
+
+Keys that plugins read directly from the config file (e.g. `weather_location` for `weather.lua`) are recognized automatically by scanning your plugin directory.
 
 ## Autostarting
 

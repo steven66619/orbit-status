@@ -4,6 +4,9 @@
 # Format: key = value
 # Colors are: r g b a  (each 0.0 - 1.0)
 # Integers and strings as expected
+#
+# After editing, validate with:  orbit-status --check-config
+# (catches typos, bad values, duplicates and dead keys - see README)
 
 # === Bar ===
 # bar_height = 38
