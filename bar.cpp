@@ -359,7 +359,25 @@ void bar_render(Bar *bar, cairo_t *cr) {
         : bar->width - bar->tray_width;
 
     int cx = ws_end + 10;
+    // Measure the center zone's right edge with the same bold font the pill
+    // row renders in - a plain-font measurement undershoots the real text
+    // width and lets the last pill slide under the tray.
     int cx_end = pw_start - 10;
+    {
+        char zone_desc[64];
+        snprintf(zone_desc, sizeof(zone_desc), "%s Bold %d",
+            config_get(bar->cfg, "font_family", "Sans"),
+            config_get_int(bar->cfg, "pill_font_size", 9));
+        PangoLayout *zl = pango_cairo_create_layout(cr);
+        PangoFontDescription *zfd = pango_font_description_from_string(zone_desc);
+        pango_layout_set_font_description(zl, zfd);
+        pango_font_description_free(zfd);
+        pango_layout_set_text(zl, "Ag", -1);
+        int zw, zh;
+        pango_layout_get_pixel_size(zl, &zw, &zh);
+        g_object_unref(zl);
+        cx_end -= zw;
+    }
 
     float acc[4];
     float def_acc[] = {0.0f, 0.90f, 1.0f, 1.0f};
@@ -510,6 +528,13 @@ void bar_render(Bar *bar, cairo_t *cr) {
         int total_w = tw + clock_pad + total_pill_w;
         int center = cx + (cx_end - cx - total_w) / 2;
         if (center < cx) center = cx;
+        // Long rows get clamped left, which can push their right edge past
+        // the tray boundary - shift the row back left so the last pill
+        // (e.g. weather) never overlaps the tray icons.
+        if (center + total_w > cx_end) {
+            center = cx_end - total_w;
+            if (center < cx) center = cx;
+        }
 
         int clock_x = center;
         int pill_x = center + tw + clock_pad;
