@@ -86,8 +86,9 @@ generate_arch() {
     local arch_arch="x86_64"
     pushd "$ARCH_DIR" >/dev/null
     # Single db (named after the repo) holding every package in this dir:
-    # orbit-status, orbiter, realspeed-cli, ...
-    local pattern="*-${arch_arch}.pkg.tar.zst"
+    # orbit-status, orbiter, realspeed-cli, ... Include both machine-arch
+    # packages and arch=('any') metapackages (orbit-desktop) in the db.
+    local pattern="*-${arch_arch}.pkg.tar.zst *-any.pkg.tar.zst"
     if [ -z "$(ls $pattern 2>/dev/null)" ]; then
         echo "    No packages ($pattern) found, skipping"
     else
