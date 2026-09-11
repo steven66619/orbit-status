@@ -7,7 +7,7 @@
 # workarounds; /etc/environment is set by the .install script (not owned by
 # the package, matching setup-sway.sh behavior).
 pkgname=orbit-desktop
-pkgver=1.0.0
+pkgver=1.0.1
 pkgrel=1
 pkgdesc="Metapackage: complete orbit-suite Wayland desktop (sway + NVIDIA 580 + orbit tools)"
 arch=('any')
@@ -21,7 +21,6 @@ depends=(
     # --- session tools the sway config execs ---
     'network-manager-applet'      # nm-applet
     'copyq'                       # clipboard tray
-    'pamac-tray-icon-plasma'      # updates tray
     'autotiling'                  # split automation
     'aria2'                       # aria2c daemon
     'libpulse'                    # pactl (volume keys)
@@ -32,6 +31,7 @@ depends=(
     'realspeed-cli'
 )
 optdepends=(
+    'pamac-tray-icon-plasma: updates tray (Manjaro repos only)'
     'manjaro-system: kernel-name detection on Manjaro'
 )
 makedepends=()
