@@ -6,6 +6,7 @@
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <sys/prctl.h>
 #include <ctime>
 #include <poll.h>
 #include <sys/timerfd.h>
@@ -165,6 +166,15 @@ static void handle_sigchld(int) {
 static void spawn_volume_sni(void) {
     pid_t pid = fork();
     if (pid == 0) {
+        // Die with the bar: without this, a killed/crashed bar leaves an
+        // orphaned volume-sni holding its org.orbit.volume-sni single-instance
+        // name forever, so every future bar spawns a child that exits at the
+        // lock and the volume icon depends on the orphan re-registering with
+        // each new watcher. PR_SET_PDEATHSIG delivers SIGTERM when the parent
+        // dies; the getppid() check closes the fork/prctl race (parent already
+        // gone before the signal was armed -> reparented to init -> exit).
+        prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0);
+        if (getppid() == 1) _exit(0);
         execlp("volume-sni", "volume-sni", (char *)nullptr);
         fprintf(stderr, "orbit-status: volume-sni not found in PATH; re-run install.sh or make install\n");
         _exit(127);
