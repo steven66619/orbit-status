@@ -286,6 +286,7 @@ static void emit_properties_changed(SniTray *tray) {
 // Start an asynchronous Get() for a string property. The reply is processed
 // later in sni_tray_dispatch via item_fetch_advance. Returns true if issued.
 static bool start_string_prop(SniTray *tray, SniItem *item, const char *prop) {
+    if (!item->object_path[0] || item->object_path[0] != '/') return false;
     DBusMessage *call = dbus_message_new_method_call(item->service,
         item->object_path, PROPS_IFACE, "Get");
     if (!call) return false;
@@ -309,6 +310,7 @@ static bool start_string_prop(SniTray *tray, SniItem *item, const char *prop) {
 
 // Start an asynchronous Get() for IconPixmap.
 static bool start_icon_pixmap(SniTray *tray, SniItem *item) {
+    if (!item->object_path[0] || item->object_path[0] != '/') return false;
     DBusMessage *call = dbus_message_new_method_call(item->service,
         item->object_path, PROPS_IFACE, "Get");
     if (!call) return false;
@@ -563,6 +565,15 @@ static void remove_item(SniTray *tray, int idx) {
     if (tray->on_change) tray->on_change(tray->userdata);
 }
 
+// A DBus object path must start with '/'. Remote watchers can hand us a
+// well-known bus name verbatim; passing such a string as a path makes libdbus
+// assert and abort the whole process (_dbus_warn_check_failed -> abort), so
+// fall back to the spec default path instead.
+static const char *valid_object_path(const char *path) {
+    if (path && path[0] == '/') return path;
+    return "/StatusNotifierItem";
+}
+
 static void add_item(SniTray *tray, const char *service, const char *object_path) {
     if (tray->n_items >= SNI_MAX_ITEMS) return;
     if (find_item(tray, service)) return;
@@ -570,7 +581,7 @@ static void add_item(SniTray *tray, const char *service, const char *object_path
     SniItem *item = &tray->items[tray->n_items++];
     *item = SniItem{};
     snprintf(item->service, sizeof(item->service), "%s", service);
-    snprintf(item->object_path, sizeof(item->object_path), "%s", object_path);
+    snprintf(item->object_path, sizeof(item->object_path), "%s", valid_object_path(object_path));
 
     item_fetch_props(tray, item);
     emit_item_registered(tray, service);
@@ -1216,6 +1227,7 @@ bool sni_tray_update_hover(SniTray *tray, int x, int y) {
 
 static void send_item_method(SniTray *tray, SniItem *item, const char *method,
                              int x, int y) {
+    if (!item->object_path[0] || item->object_path[0] != '/') return;
     DBusMessage *call = dbus_message_new_method_call(item->service,
         item->object_path, SNI_ITEM_IFACE, method);
     if (!call) return;
@@ -1264,6 +1276,7 @@ bool sni_tray_handle_scroll(SniTray *tray, int x, int y, int delta) {
         if (x >= item->x && x < item->x + item->w &&
             y >= item->y && y < item->y + item->h) {
             // Send the SNI Scroll method: Scroll(i delta, s orientation).
+            if (!item->object_path[0] || item->object_path[0] != '/') return true;
             DBusMessage *call = dbus_message_new_method_call(item->service,
                 item->object_path, SNI_ITEM_IFACE, "Scroll");
             if (!call) return true;
