@@ -1,0 +1,57 @@
+# Maintainer: steven66619 <steven4x4@gmail.com>
+# Metapackage: installs the complete orbit-suite Wayland desktop in one shot.
+#   pacman -S orbit-desktop
+# pulls in sway + the NVIDIA 580 DKMS driver + every tool the sway session
+# execs (tray, launcher, bar, autotiling, downloads daemon) + the orbit-suite
+# packages from this repo. Ships the sway session entry with the GPU
+# workarounds; /etc/environment is set by the .install script (not owned by
+# the package, matching setup-sway.sh behavior).
+pkgname=orbit-desktop
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Metapackage: complete orbit-suite Wayland desktop (sway + NVIDIA 580 + orbit tools)"
+arch=('any')
+url="https://github.com/steven66619/orbit-status"
+license=('MIT')
+depends=(
+    # --- compositor + session ---
+    'sway' 'swaybg' 'xorg-xwayland' 'sddm' 'dex' 'polkit-gnome'
+    # --- NVIDIA 580 (GTX 10xx series); DKMS builds for the running kernel ---
+    'nvidia-580xx-dkms'
+    # --- session tools the sway config execs ---
+    'network-manager-applet'      # nm-applet
+    'copyq'                       # clipboard tray
+    'pamac-tray-icon-plasma'      # updates tray
+    'autotiling'                  # split automation
+    'aria2'                       # aria2c daemon
+    'libpulse'                    # pactl (volume keys)
+    'shotwell'                    # image viewer (set as default below)
+    # --- orbit suite (this repo) ---
+    'orbit-status'
+    'orbiter'
+    'realspeed-cli'
+)
+optdepends=(
+    'manjaro-system: kernel-name detection on Manjaro'
+)
+makedepends=()
+install=orbit-desktop.install
+
+# No build step: metapackage. package() ships the sway session entry with the
+# GPU workarounds baked in (same content setup-sway.sh writes).
+build() {
+    :
+}
+
+package() {
+    install -d "$pkgdir/usr/share/wayland-sessions"
+    cat > "$pkgdir/usr/share/wayland-sessions/sway-orbit.desktop" <<'EOF'
+[Desktop Entry]
+Name=Sway (orbit)
+Comment=orbit-suite Wayland desktop (NVIDIA workarounds applied)
+Exec=env WLR_NO_HARDWARE_CURSORS=1 sway --unsupported-gpu
+Type=Application
+DesktopNames=sway;wlroots
+EOF
+    chmod 644 "$pkgdir/usr/share/wayland-sessions/sway-orbit.desktop"
+}

@@ -50,7 +50,15 @@ jobs:
               echo "Skipping $pkg (LOCAL-ONLY: sources a private repo, built and committed locally)"
               continue
             fi
-            su builder -c "cd $PWD/$pkg && makepkg -f --noconfirm"
+            # NODEPS marker: build with -d because a dependency cannot be
+            # resolved in this container (e.g. orbit-desktop needs
+            # nvidia-580xx-dkms from Manjaro/chaotic). The dep is still
+            # recorded in the package for real installs.
+            if [ -f "$pkg/NODEPS" ]; then
+              su builder -c "cd $PWD/$pkg && makepkg -d -f --noconfirm"
+            else
+              su builder -c "cd $PWD/$pkg && makepkg -f --noconfirm"
+            fi
             # Drop the -debug package makepkg also produces
             rm -f "$pkg"/*-debug-*.pkg.tar.zst
             cp "$pkg"/*.pkg.tar.zst repo/arch/x86_64/

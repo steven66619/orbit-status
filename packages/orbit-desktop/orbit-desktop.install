@@ -1,0 +1,67 @@
+## arg 1:  the new package version
+## arg 2:  the previous package version
+
+post_install() {
+    # GPU workarounds in /etc/environment (same values setup-sway.sh sets).
+    # Not package-owned files, so pacman won't clobber them on upgrade.
+    for var in 'SWAY_UNSUPPORTED_GPU=true' 'WLR_NO_HARDWARE_CURSORS=1'; do
+        grep -qxF "$var" /etc/environment 2>/dev/null || echo "$var" >> /etc/environment
+    done
+
+    # Shotwell as the default image viewer. /etc/xdg/mimeapps.list is the
+    # system-wide default layer: xdg settings yield to per-user overrides in
+    # ~/.config/mimeapps.list, so we only write it when nothing has claimed it
+    # yet (never clobber an existing default).
+    if [ ! -e /etc/xdg/mimeapps.list ]; then
+        cat > /etc/xdg/mimeapps.list <<'EOF'
+[Default Applications]
+# Shotwell (orbit-desktop): images incl. camera RAW + modern formats
+image/jpeg=org.gnome.Shotwell-Viewer.desktop
+image/jpg=org.gnome.Shotwell-Viewer.desktop
+image/pjpeg=org.gnome.Shotwell-Viewer.desktop
+image/png=org.gnome.Shotwell-Viewer.desktop
+image/x-png=org.gnome.Shotwell-Viewer.desktop
+image/tiff=org.gnome.Shotwell-Viewer.desktop
+image/bmp=org.gnome.Shotwell-Viewer.desktop
+image/x-bmp=org.gnome.Shotwell-Viewer.desktop
+image/gif=org.gnome.Shotwell-Viewer.desktop
+image/webp=org.gnome.Shotwell-Viewer.desktop
+image/avif=org.gnome.Shotwell-Viewer.desktop
+image/heif=org.gnome.Shotwell-Viewer.desktop
+image/jxl=org.gnome.Shotwell-Viewer.desktop
+image/x-dcraw=org.gnome.Shotwell-Viewer.desktop
+image/x-canon-cr2=org.gnome.Shotwell-Viewer.desktop
+image/x-canon-cr3=org.gnome.Shotwell-Viewer.desktop
+image/x-nikon-nef=org.gnome.Shotwell-Viewer.desktop
+image/x-sony-arw=org.gnome.Shotwell-Viewer.desktop
+image/x-olympus-orf=org.gnome.Shotwell-Viewer.desktop
+image/x-pentax-pef=org.gnome.Shotwell-Viewer.desktop
+image/x-fuji-raf=org.gnome.Shotwell-Viewer.desktop
+image/x-panasonic-raw=org.gnome.Shotwell-Viewer.desktop
+image/x-adobe-dng=org.gnome.Shotwell-Viewer.desktop
+image/x-sigma-x3f=org.gnome.Shotwell-Viewer.desktop
+image/x-x3f=org.gnome.Shotwell-Viewer.desktop
+EOF
+        echo "==> Set Shotwell as the default image viewer (/etc/xdg/mimeapps.list)"
+    fi
+
+    cat <<'EOF'
+
+==> orbit-desktop installed.
+
+  The DKMS module builds against your running kernel's headers. On Manjaro
+  that is pulled in automatically; on Arch, install e.g. linux-headers.
+
+  Next steps:
+    1. reboot (or: sudo systemctl enable --now sddm)
+    2. pick "Sway (orbit)" at the login screen
+    3. restore your configs:  ~/restore-helpers/restore-config-from-rclone.sh
+
+  Sway's own session entry is also installed if you prefer a stock compositor
+  session; "Sway (orbit)" is the one with the NVIDIA flags.
+EOF
+}
+
+post_upgrade() {
+    post_install "$1"
+}

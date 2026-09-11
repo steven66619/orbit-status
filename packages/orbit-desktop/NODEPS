@@ -1,0 +1,4 @@
+# Build marker for CI: this metapackage depends on nvidia-580xx-dkms, which is
+# not in official Arch repos (Manjaro/chaotic-aur serve it), so CI cannot
+# resolve it. NODEPS makes the publish workflow build with `makepkg -d`.
+# The dependency is still recorded in the package, so real installs resolve it.
