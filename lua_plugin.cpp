@@ -7,6 +7,7 @@ extern "C" {
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
 #include <ctime>
 #include <unistd.h>
 #include <signal.h>
@@ -106,6 +107,10 @@ static bool do_tick_fork(LuaPlugin *p) {
 
     while (total < (ssize_t)sizeof(buf) - 1) {
         int ret = poll(&pfd, 1, 2000);
+        // SIGCHLD (from this child or any other) interrupts poll() with
+        // EINTR; retry instead of treating it as a timeout, otherwise the
+        // child's output is never read and the plugin renders empty.
+        if (ret < 0 && errno == EINTR) continue;
         if (ret <= 0) break;
         ssize_t n = read(pipefd[0], buf + total, sizeof(buf) - 1 - total);
         if (n <= 0) break;
